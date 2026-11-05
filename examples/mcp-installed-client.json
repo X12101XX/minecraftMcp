@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "minecraft": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/minecraftMcp/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "MINECRAFT_MCP_CONFIG": "/home/YOUR_USER/.minecraft/config/minecraft-mcp.credentials.json"
+      }
+    }
+  }
+}

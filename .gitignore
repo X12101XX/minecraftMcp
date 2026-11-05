@@ -1,0 +1,60 @@
+# OS / editor-local state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Gradle / Java build products (keep Gradle wrapper JAR trackable)
+.gradle/
+**/build/
+**/out/
+*.class
+hs_err_pid*
+replay_pid*
+*.hprof
+
+# Node / TypeScript generated files (keep dependency lockfiles)
+node_modules/
+**/dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Minecraft development instances, saves, caches and downloaded runtime assets
+run/
+runClient/
+runServer/
+.minecraft/
+world/
+worlds/
+saves/
+logs/
+crash-reports/
+.gradle-test-kit/
+/integration/runtime/
+/integration/artifacts/
+/integration/client/
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local.json
+*.local.properties
+/secrets/
+**/minecraft-mcp.token
+**/minecraft-mcp.credentials.json
+**/minecraft-mcp-bridge.json
+
+# Temporary files
+*.tmp
+*.temp

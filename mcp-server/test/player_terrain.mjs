@@ -1,0 +1,21 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+const here = dirname(fileURLToPath(import.meta.url));
+const t = new StdioClientTransport({ command: process.execPath, args: [resolve(here, "../dist/index.js")], env: { ...process.env }, stderr: "inherit" });
+const c = new Client({ name: "player-terrain", version: "1.0.0" }); await c.connect(t);
+async function call(n, a = {}) { const r = await c.callTool({ name: n, arguments: a }); const b = JSON.parse(r.content[0].text); if (r.isError) throw new Error(`${n}: ${b.error?.code} ${b.error?.message}`); return b; }
+const sid = (await call("get_world_info")).world_session_id;
+const player = await call("get_player_position", { world_session_id: sid });
+const p = player.block_pos;
+const min = { x: p.x - 12, y: -64, z: p.z - 12 };
+const max = { x: p.x + 20, y: -52, z: p.z + 20 };
+const sub = await call("get_terrain", { world_session_id: sid, dimension: player.dimension, min, max, clearance_height: 3, request_id: randomUUID() });
+let op; do { await new Promise(r => setTimeout(r, 50)); op = (await call("get_operation", { world_session_id: sid, operation_id: sub.operation.operation_id })).operation; } while (!["succeeded","failed","cancelled"].includes(op.state));
+const cols = []; let cursor;
+do { const page = await call("get_query_result", { world_session_id: sid, operation_id: op.operation_id, ...(cursor?{cursor}:{}) }); cols.push(...page.columns); cursor = page.next_cursor; } while (cursor);
+const usable = cols.filter(col => col.support_candidates.some(s => s.support_ok && s.block_state.id === "minecraft:grass_block"));
+console.log(JSON.stringify({ player: { pos: player.position, block: p, dimension: player.dimension }, columns: cols.length, usable: usable.length, sample: usable.slice(0,5).map(c => ({ x: c.x, z: c.z, supports: c.support_candidates.filter(s=>s.support_ok) })) }));
+await c.close();

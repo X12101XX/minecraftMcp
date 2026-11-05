@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "minecraft-mcp",
+	"version": "${version}",
+	"name": "Minecraft MCP Bridge",
+	"description": "Loopback control bridge that exposes live Minecraft world access (dedicated or integrated server) to the standalone MCP server.",
+	"authors": ["Minecraft MCP contributors"],
+	"license": "GPL-3.0-only",
+	"environment": "*",
+	"entrypoints": {
+		"main": ["dev.mcmcp.MinecraftMcpMod"]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"fabric-api": "*",
+		"minecraft": "~26.3",
+		"java": ">=25"
+	}
+}
