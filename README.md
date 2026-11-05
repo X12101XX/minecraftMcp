@@ -36,6 +36,7 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 | `docs/tool-contracts.md` | 每个 MCP Tool 的完整参数、结果、错误、分页和内部协议 |
 | `docs/architecture.md` | 线程、调度、区块、压缩、安全与生命周期设计 |
 | `docs/verification-report.md` | 实际构建、测试、性能和未验证项 |
+| `docs/release-1.0.0.md` | GitHub Release 资产、安装脚本与安装步骤 |
 | `integration/client/` | 本地集成测试客户端（运行时目录，不纳入版本） |
 | `skills/` | 开发 Skill 与运行时建造 Skill |
 
