@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const wide = new WideRegionCoordinator(client);
   const wideWrite = new WideWriteCoordinator(client);
   const server = new Server(
-    { name: "minecraft-mcp", version: "2.0.0" },
+    { name: "minecraft-mcp", version: "2.1.0" },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
 

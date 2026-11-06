@@ -37,7 +37,7 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 | `docs/tool-contracts.md` | 每个 MCP Tool 的完整参数、结果、错误、分页和内部协议 |
 | `docs/architecture.md` | 线程、调度、区块、压缩、安全与生命周期设计 |
 | `docs/verification-report.md` | 实际构建、测试、性能和未验证项 |
-| `docs/release-2.0.0.md` | 最新 GitHub Release 资产、升级和安装步骤 |
+| `docs/release-2.1.0.md` | 最新 GitHub Release 资产、升级和安装步骤 |
 | `integration/client/` | 本地集成测试客户端（运行时目录，不纳入版本） |
 | `skills/` | 开发 Skill 与运行时建造 Skill |
 
@@ -54,10 +54,10 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 ```bash
 cd fabric-mod
 ./gradlew build
-# 产物：build/libs/minecraft-mcp-2.0.0.jar
+# 产物：build/libs/minecraft-mcp-2.1.0.jar
 ```
 
-把 `minecraft-mcp-2.0.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。升级前移除旧版 Minecraft MCP JAR，避免重复 Mod ID。
+把 `minecraft-mcp-2.1.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。升级前移除旧版 Minecraft MCP JAR，避免重复 Mod ID。
 
 需要看到 Agent 的选区与待放方块时，**服务端和观看者客户端都安装同一构建的本 Mod + Fabric API**；无需其他前置 Mod。只装服务端仍可正常读取/逐块写入，但原版客户端没有自定义预览。单人世界安装一次即可。
 
@@ -155,7 +155,7 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 
 `undo_operation` 可按记录的写后 BlockState 条件恢复直接写入；它不能检测状态变更后又变回原样（ABA），也不能恢复方块实体、NBT 和间接世界副作用，不是事务回滚。
 
-截图默认使用 `config/minecraft-mcp.json` 中 `camera_player` 配置的专用相机账号，而不是真实玩家；在该账号的客户端安装同版本 Mod 并进入世界即可。未配置时才要求显式 `player_uuid`。画面可能包含聊天和 HUD；截图为该账号的当前视角，非任意位置相机。限制 800 万像素及 4 MiB PNG，结果保留 60 秒。
+截图默认使用 `config/minecraft-mcp.json` 中 `camera_player` 配置的专用相机账号，而不是真实玩家；在该账号的客户端安装同版本 Mod 并进入世界即可。`request_screenshot` 可传 `camera: {dimension, pos:{x,y,z}, yaw?, pitch?}`，服务端会先把相机账号切到旁观模式并传送到该位姿再截图；目标区块必须已加载。未传 `camera` 时截取账号当前视角。画面可能包含聊天和 HUD；限制 800 万像素及 4 MiB PNG，结果保留 60 秒。可用 `scripts/camera-client.sh` 启动独立相机客户端（自动关闭失焦暂停）。
 
 无人值守测试 dedicated 服时，需把 `server.properties` 的 `pause-when-empty-seconds` 设为 `0`；否则无玩家时服务端可能暂停 Tick，异步任务会等待而不是完成。单人游戏可用 F3+P 关闭失焦暂停；主动打开暂停菜单仍会停止集成服务端 Tick。超时后应查询原任务，而非新建重复任务。
 
@@ -179,11 +179,11 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 | `fill_region` | `min`, `max`, `block_state`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
 | `replace_blocks` | `min`, `max`, `filter`, `block_state`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
 | `batch_set_blocks` | `blocks[]`, `request_id`, 可选 `on_error` | 异步写 |
-| `batch_set_blocks_sharded` | 同 batch；最多 16,384 项、1,900,000 字节 | 全部预校验后自动分片，非事务 |
+| `batch_set_blocks_sharded` | 同 batch；最多 16,384 项、1,900,000 字节 | 全部预校验后自动按 8192 项/64 区块分片，非事务 |
 | `batch_set_blocks_sharded_by_request_id` | `world_session_id`, `request_id` | 查询当前 MCP 进程内的分片写父任务 |
 | `undo_operation` | `world_session_id`, `dimension`, 源 `operation_id`, `request_id`, `on_error?` | 异步条件恢复 |
 | `preload_chunks` | `world_session_id`, `dimension`, `min`, `max`, `request_id` | 显式加载最多 1,024 个区块，加载票据约 5 分钟 |
-| `request_screenshot` | `world_session_id`, `request_id`, 可选 `player_uuid` | 截取配置的相机账号；省略时用 `camera_player` |
+| `request_screenshot` | `world_session_id`, `request_id`, 可选 `player_uuid`, 可选 `camera` | 截取相机账号当前视角，或先传送到 `camera` 位姿 |
 | `get_screenshot_status` / `get_screenshot` / `cancel_screenshot` | `world_session_id`, `capture_id` | 查询、取得 PNG 或取消截图 |
 | `get_operation` | `world_session_id`, `operation_id` | 同步查询任务 |
 | `get_operation_by_request_id` | `world_session_id`, `request_id` | 按请求 ID 查询已接受任务 |
@@ -221,7 +221,16 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 
 ## 建筑闭环验证
 
-E2E 客户端脚本在真实 Minecraft 中执行以下流程：
+建前先检查场地净空，避免只校验设计包围盒而忽略周围残留结构：
+
+```bash
+cd mcp-server
+MINECRAFT_MCP_CONFIG=/path/to/minecraft-mcp.credentials.json \
+  node tools/check-site.mjs --dimension minecraft:overworld \
+  --min 126,-60,-48 --max 140,-43,-36 --margin 2
+```
+
+该工具会读取扩展边界（x/z 各加 margin，y 不变）内的完整方块数据；草方块视为自然地表忽略，其他 core 或 margin 方块非空时以退出码 1 报出坐标。它还能防止旧建筑残留在新楼旁边。E2E 客户端脚本在真实 Minecraft 中执行以下流程：
 
 ```bash
 cd mcp-server

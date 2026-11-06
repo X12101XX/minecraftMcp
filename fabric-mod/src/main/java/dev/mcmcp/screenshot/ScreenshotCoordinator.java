@@ -3,7 +3,9 @@ package dev.mcmcp.screenshot;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.GameType;
 
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
@@ -16,6 +18,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -37,6 +40,8 @@ public final class ScreenshotCoordinator {
 
 	public enum State { PENDING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT }
 	public record Status(String id, UUID player, State state, String error, int bytes) {}
+	/** Server-side camera pose applied to the dedicated camera account before capture. */
+	public record CameraPose(String dimension, double x, double y, double z, float yaw, float pitch) {}
 	private static final class Capture {
 		final String id, requestId; final UUID player; final ServerPlayer connectionPlayer; final long deadline;
 		State state = State.PENDING; String error = ""; long expires; int total; boolean validating;
@@ -59,6 +64,9 @@ public final class ScreenshotCoordinator {
 	private void checkSession(String requested) { if (!session.equals(requested)) throw new IllegalArgumentException("WORLD_SESSION_MISMATCH"); }
 	/** Must run on the server thread. Resolves a camera account by UUID or exact account name. */
 	public String startBySelector(String requested, String selector, String requestId) {
+		return startBySelector(requested, selector, requestId, null);
+	}
+	public String startBySelector(String requested, String selector, String requestId, CameraPose pose) {
 		checkSession(requested);
 		if (selector == null || selector.isBlank()) throw new IllegalArgumentException("CAMERA_PLAYER_REQUIRED");
 		ServerPlayer player = null;
@@ -73,10 +81,13 @@ public final class ScreenshotCoordinator {
 			}
 		}
 		if (player == null) throw new IllegalArgumentException("PLAYER_NOT_FOUND");
-		return start(requested, player.getUUID(), requestId);
+		return start(requested, player.getUUID(), requestId, pose);
 	}
 	/** Must run on the server thread. A canonical UUID request ID makes retries idempotent. */
 	public String start(String requested, UUID playerId, String requestId) {
+		return start(requested, playerId, requestId, null);
+	}
+	public String start(String requested, UUID playerId, String requestId, CameraPose pose) {
 		checkSession(requested); tick();
 		if (playerId == null) throw new IllegalArgumentException("PLAYER_REQUIRED");
 		try {
@@ -91,11 +102,36 @@ public final class ScreenshotCoordinator {
 		if (player == null) throw new IllegalArgumentException("PLAYER_NOT_FOUND");
 		if (!ServerPlayNetworking.canSend(player, ScreenshotPayload.Request.TYPE)) throw new IllegalStateException("CLIENT_CAPTURE_UNAVAILABLE");
 		for (Capture capture : captures.values()) if (capture.player.equals(playerId) && capture.state == State.PENDING) throw new IllegalStateException("PLAYER_CAPTURE_BUSY");
+		if (pose != null) applyPose(player, pose);
 		byte[] nonce = new byte[18]; random.nextBytes(nonce); String id = Base64.getUrlEncoder().withoutPadding().encodeToString(nonce);
 		Capture capture = new Capture(id, requestId, player, System.nanoTime() + TIMEOUT); captures.put(id, capture);
 		try { ServerPlayNetworking.send(player, new ScreenshotPayload.Request(session, id, ScreenshotPayload.Command.REQUEST)); }
 		catch (RuntimeException e) { captures.remove(id); throw e; }
 		return id;
+	}
+	private void applyPose(ServerPlayer player, CameraPose pose) {
+		ServerLevel level = null;
+		for (ServerLevel candidate : server.getAllLevels()) {
+			if (candidate.dimension().identifier().toString().equals(pose.dimension())) { level = candidate; break; }
+		}
+		if (level == null) throw new IllegalArgumentException("DIMENSION_NOT_FOUND");
+		int minY = level.dimensionType().minY();
+		int maxY = minY + level.dimensionType().height();
+		if (pose.y() < minY || pose.y() >= maxY) throw new IllegalArgumentException("OUT_OF_BOUNDS");
+		double minX = level.getWorldBorder().getMinX(), maxX = level.getWorldBorder().getMaxX();
+		double minZ = level.getWorldBorder().getMinZ(), maxZ = level.getWorldBorder().getMaxZ();
+		if (pose.x() < minX || pose.x() >= maxX || pose.z() < minZ || pose.z() >= maxZ) {
+			throw new IllegalArgumentException("OUT_OF_BOUNDS");
+		}
+		int chunkX = (int) Math.floor(pose.x()) >> 4, chunkZ = (int) Math.floor(pose.z()) >> 4;
+		if (!level.getChunkSource().hasChunk(chunkX, chunkZ) || level.getChunkSource().getChunkNow(chunkX, chunkZ) == null) {
+			throw new IllegalArgumentException("CHUNK_NOT_LOADED");
+		}
+		if (!player.isSpectator() && !player.setGameMode(GameType.SPECTATOR)) throw new IllegalArgumentException("SPECTATOR_UNAVAILABLE");
+		if (!player.isSpectator()) throw new IllegalArgumentException("SPECTATOR_UNAVAILABLE");
+		if (!player.teleportTo(level, pose.x(), pose.y(), pose.z(), Set.of(), pose.yaw(), pose.pitch(), false)) {
+			throw new IllegalArgumentException("TELEPORT_REJECTED");
+		}
 	}
 	public Status status(String requested, String id) { checkSession(requested); tick(); Capture c = require(id); return new Status(c.id, c.player, c.state, c.error, c.data == null ? 0 : c.data.size()); }
 	public void cancel(String requested, String id) { checkSession(requested); tick(); Capture c = require(id); if (c.state == State.PENDING) { finish(c, State.CANCELLED, "CANCELLED"); sendCancel(c); } }

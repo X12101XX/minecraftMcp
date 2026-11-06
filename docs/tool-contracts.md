@@ -454,18 +454,18 @@
 
 ### `batch_set_blocks_sharded`
 
-与 `batch_set_blocks` 使用相同参数，每次最多 16,384 个不同坐标，输入 JSON 最多 1,900,000 字节。MCP Server 先将所有子片提交至真实注册表逐 Tick 预校验，全部通过后才按输入顺序执行；每片最多 128 项及 64 区块，每片执行前预览 20 Tick。全部目标和期望状态预校验不意味着执行时区块、预期状态或世界不会变化；执行、失败及取消均非事务。
+与 `batch_set_blocks` 使用相同参数，每次最多 16,384 个不同坐标，输入 JSON 最多 1,900,000 字节。MCP Server 先将所有子片提交至真实注册表逐 Tick 预校验，全部通过后才按输入顺序执行；每片最多 8192 项及 64 区块，每片执行前预览 20 Tick。全部目标和期望状态预校验不意味着执行时区块、预期状态或世界不会变化；执行、失败及取消均非事务。
 
 父任务由 MCP Server 在内存中维护，最多 8 个保留任务、终态 TTL 5 分钟；使用 `batch_set_blocks_sharded_by_request_id` 在该进程查询父任务，正常任务工具查询父状态及错误页。子请求提交无法确定时暴露子 request ID 和不确定状态，不自动重放；父进程重启丢失记录，应重读世界。
 
 ### 客户端截图
 
-`request_screenshot` 参数为 `world_session_id`、`request_id` 和可选的在线玩家小写 `player_uuid`；返回 `capture_id`。省略 `player_uuid` 时使用配置 `camera_player` 指定的专用相机账号（名称或 UUID），因此默认不截取真实玩家画面。相同请求 ID 和玩家在保留期内返回同一 capture，不同玩家冲突。客户端直接截图，不显示授权提示；画面可能包含 HUD、聊天等隐私，持有 MCP 凭据即可请求。同一玩家最多一个待处理请求，全局最多四个保留请求；等待 30 秒，终态保留 60 秒。
+`request_screenshot` 参数为 `world_session_id`、`request_id`、可选的在线玩家小写 `player_uuid` 和可选的 `camera`；返回 `capture_id`。省略 `player_uuid` 时使用配置 `camera_player` 指定的专用相机账号（名称或 UUID），因此默认不截取真实玩家画面。`camera` 只能与相机账号一起使用，形状为 `{dimension, pos:{x,y,z}, yaw?, pitch?}`；服务端先在服务端线程把相机账号切到旁观模式并传送到该位姿，再发截图请求。目标区块必须已加载，坐标须在世界边界内，`pitch` 为 -90..90。相同请求 ID 和玩家在保留期内返回同一 capture，不同玩家冲突。客户端直接截图，不显示授权提示；画面可能包含 HUD、聊天等隐私，持有 MCP 凭据即可请求。同一玩家最多一个待处理请求，全局最多四个保留请求；等待 30 秒，终态保留 60 秒。
 
-用 `get_screenshot_status`、`cancel_screenshot` 或 `get_screenshot` 携带 session 和 capture ID。成功获取返回 MCP `image/png` image content；PNG 最多 4 MiB、800 万像素，不受普通查询页 512 KiB 限制。服务端验证连接玩家、会话、请求、分片序列和图片；结果 60 秒内可重复取回。截图为客户端自报的当前渲染视角，不保证恶意客户端数据真实，不能用于反作弊；不提供远程相机控制。
+用 `get_screenshot_status`、`cancel_screenshot` 或 `get_screenshot` 携带 session 和 capture ID。成功获取返回 MCP `image/png` image content；PNG 最多 4 MiB、800 万像素，不受普通查询页 512 KiB 限制。服务端验证连接玩家、会话、请求、分片序列和图片；结果 60 秒内可重复取回。截图为客户端自报的当前渲染视角，不保证恶意客户端数据真实，不能用于反作弊；`camera` 只做一次性位姿传送，不提供持续自由相机、视频流或实体控制。
 
 ```json
-{"name":"request_screenshot","arguments":{"world_session_id":"s-example","request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
+{"name":"request_screenshot","arguments":{"world_session_id":"s-example","camera":{"dimension":"minecraft:overworld","pos":{"x":111.5,"y":-44,"z":-41.5},"yaw":-90,"pitch":8},"request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
 ```
 
 ### `undo_operation` 条件状态恢复

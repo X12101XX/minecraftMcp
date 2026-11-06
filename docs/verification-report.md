@@ -1,6 +1,6 @@
 # 验证报告
 
-初始验收日期：2026-11-05（CST）；建造过程可视化回归：2026-11-06（CST），见第 8 节。第 1—7 节保留 1.0.0 的历史结果（尤其 256/Tick 吞吐），不能当作当前逐块模式的性能数据。本报告只记录实际执行过的检查，未验证项不从其他通过项推断。
+初始验收日期：2026-11-05（CST）；建造过程可视化回归：2026-11-06（CST），见第 8 节；2.0 能力扩展与 2.1 发布验收见第 10—15 节。第 1—7 节保留 1.0.0 的历史结果，第 8 节保留 1.1.0 的逐块模式与性能结果；当前 2.1 默认每 Tick 256 个候选，性能以第 13—15 节为准。本报告只记录实际执行过的检查，未验证项不从其他通过项推断。
 
 ## 1. 环境
 
@@ -249,11 +249,35 @@ node test/negative.mjs
 - 未实测预加载票据在约 6,000 Tick 后自然过期、上千区块同时加载、取消后的票据清理与保存重启；`preload_chunks` 会产生并保存缺失区块。
 - 未实测 integrated 单人世界、4 MiB 上限、截图中途断连与多人客户端；未将客户端自报画面作为防篡改证明。
 
-## 14. 2.0.0 发布包安装验收 — 2026-11-06
+## 14. 相机位姿、满容量分片与场地检查 — 2026-11-06
 
-- 版本同步为 **2.0.0**：`gradle.properties`、npm package/lockfile、MCP 握手版本、安装脚本与 README 产物路径。
-- `cd fabric-mod && ./gradlew test build` 通过，产物 `minecraft-mcp-2.0.0.jar`；JAR 元数据为 `id=minecraft-mcp`、`version=2.0.0`、`environment=*`。
-- `cd mcp-server && npm test` 的 18 项测试通过；`npm pack` 生成 `minecraft-mcp-server-2.0.0.tgz`。
-- 完整包 `./install.sh` 在隔离 npm prefix、Skill 与 mods 目录实际安装成功；安装后的 MCP Server 通过官方 SDK 发现 **28 个工具**，包含 `preload_chunks`。
-- 四个发布资产的 SHA-256 已生成；完整包包含安装脚本、技能目录、示例配置、许可证与验证报告。
-- 安装后的 JAR 未单独启动新的 dedicated 进程；真实世界验证使用同一构建的 Loom 开发运行（Java 类相同）。发布前仍应补跑安装 JAR 启动检查。
+### 14.1 构建与契约回归
+
+- `cd fabric-mod && ./gradlew clean test build`：BUILD SUCCESSFUL，28 个 JUnit 测试、0 失败；产物 `minecraft-mcp-2.1.0.jar`。
+- `cd mcp-server && npm test`：20 个测试通过。新增测试覆盖 9,000 项连续 batch 按 8,192 项分片为 `[8192, 808]`，并确认所有分片预校验完成后才开始写。
+- 分片写入契约改为每片最多 8,192 项及 64 区块；此前 128 项小片会产生大量顺序预览/子操作，现与基础 batch 使用同一容量。
+- 新增 `mcp-server/tools/check-site.mjs` 的实机检查：空场地返回 `core.occupied=0, margin.occupied=0` 且退出码 0；在检查框内放入一个石头后返回该坐标、退出码 1；条件移除后回读为空气。
+
+### 14.2 相机位姿截图
+
+- 首次真实位姿请求返回 `SPECTATOR_UNAVAILABLE`。检查目标版本字节码确认 `ServerPlayer.setGameMode` 在账号**已是旁观者**时返回 `false`；修复为已在旁观模式则跳过切换，并在传送前再次验证 `isSpectator()`。
+- 重启同一构建后，使用专用账号 `MCPCamera`，请求 `camera={dimension:minecraft:overworld,pos:{x:111.5,y:-44,z:-41.5},yaw:-90,pitch:8}`。`request_screenshot` 成功返回 capture ID；随后 `get_player_position` 返回完全相同的位置、yaw=-90、pitch=8。取得 PNG 为 936×1018、569,883 字节，人工查看为测试房屋正面视角；画面没有真实玩家热键栏，包含 Mod 活动面板和聊天提示。
+- 同一批请求验证错误：pitch 91 → `INVALID_ARGUMENT`；世界边界外 x → `OUT_OF_BOUNDS`；不存在维度 → `DIMENSION_NOT_FOUND`；未加载区块 → `CHUNK_NOT_LOADED`；同时传 `player_uuid` 与 `camera` → `INVALID_ARGUMENT`。
+- `camera` 仅移动专用相机账号并切旁观；不移动真实玩家，不提供持续自由相机或视频流。目标区块必须已加载，不会为截图隐式加载。
+
+### 14.3 远端预加载与 9,216 项分片写
+
+- 远端 `(2000,250,2000)` 预加载前返回 `CHUNK_NOT_LOADED`；`preload_chunks` 覆盖 x=2000..2143、z=2000..2127（72 个区块）后，任务 `succeeded`，计数 72/72，开始 Tick 220、结束 Tick 225；同一位置回读为空气。
+- 向这 72 个已加载区块提交 `batch_set_blocks_sharded`，共 9,216 个石头目标（同时超过 8,192 项和 64 区块）：父任务分为 **2 个分片**，终态 `succeeded`，`changed=9,216`，耗时 **7.644 秒**。采样 4 个目标坐标全部回读为 `minecraft:stone`；按父 request ID 查询返回同一任务、`changed=9,216`、`shard_count=2`。
+- 随后以同坐标的 9,216 个空气目标分片清理，父任务同样分为 2 片，`changed=9,216`，耗时约 7.3 秒；4 个采样点全部回读为空气。没有使用事务或 undo，验证的是批量分片与清理。
+- 未实测 16,384 项输入上限、预加载 1,024 区块、票据自然过期、分片父任务取消/失败后的部分修改、安装 JAR 的这次相机位姿路径。
+
+## 15. 2.1.0 发布包安装验收 — 2026-11-06
+
+- 版本同步为 **2.1.0**：`gradle.properties`、npm package/lockfile、MCP 握手版本、安装脚本与 README 产物路径。`npm pack` 的文件清单包含 `tools/check-site.mjs`。
+- `cd fabric-mod && ./gradlew clean test build` 通过，产物 `minecraft-mcp-2.1.0.jar`；Fabric 日志和 MCP 握手均报告 `2.1.0`。
+- `cd mcp-server && npm test` 的 20 项测试通过；`npm pack` 生成 `minecraft-mcp-server-2.1.0.tgz`、`skills` 与完整包，四个发布资产及包内 `SHA256SUMS` 均经 `sha256sum -c` 验证。
+- 将完整包解压后，在隔离的 npm prefix、Skill 与 mods 目录执行 `./install.sh`：MCP Server、建造 Skill 和 `minecraft-mcp-2.1.0.jar` 均安装成功；安装后的可执行文件通过官方 SDK 握手取得 `minecraft-mcp 2.1.0`，发现 **28 个工具**（bridge 报告 24 个），并能运行打包内的 `check-site.mjs`。
+- 用独立下载的 Fabric server launcher 加载发布 JAR（而不是 Loom 开发 classpath）启动临时 dedicated 服务端：日志显示 `minecraft-mcp 2.1.0`，bridge 生成新 session。经 MCP 在 `(24,210,8)` 先确认空气，放置石头并回读石头，再删除并回读空气；操作均 succeeded、changed=1。
+- 安装包内的 `check-site.mjs` 在空场地 `(24,210,8)` 返回 0 占用、退出码 0；开发运行中的占用检测另见第 14.1 节。
+- 未用发布 JAR 重跑相机位姿、分片写入和预加载；这些路径由同一构建的 Loom 开发运行验证，发布 JAR 只验证了启动、版本、工具发现和单方块写读闭环。未在另一台机器、Windows/macOS 或真实 Microsoft 登录环境复测安装包。

@@ -17,7 +17,18 @@ loom {
 			runDir (project.findProperty("mc_rundir") ?: "../integration/client")
 			programArg "--username"
 			programArg (project.findProperty("mc_username") ?: "DevBuilder")
+			def quickPlay = project.findProperty("mc_quickplay")
+			if (quickPlay != null) {
+				programArg "--quickPlayMultiplayer"
+				programArg quickPlay.toString()
+			}
 		}
+	}
+}
+
+tasks.named("runClient").configure {
+	if (project.hasProperty("mc_xvfb")) {
+		useXvfb.set(project.property("mc_xvfb").toString().toBoolean())
 	}
 }
 

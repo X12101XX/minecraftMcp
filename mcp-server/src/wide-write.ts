@@ -12,6 +12,7 @@ type Job = {
   errors: Obj[]; terminalError: Obj | null; cursors: string[];
 };
 const MAX_ENTRIES = 16384;
+const MAX_SHARD_ENTRIES = 8192;
 const MAX_INPUT_BYTES = 1900000;
 const MAX_JOBS = 8;
 const TTL = 300000;
@@ -108,7 +109,7 @@ export class WideWriteCoordinator {
       if (positions.has(position)) throw new BridgeError('DUPLICATE_POSITION', 'Batch contains a duplicate coordinate', false, { candidate_index: i, pos: p });
       positions.add(position);
       const chunk = `${Math.floor((p.x as number) / 16)},${Math.floor((p.z as number) / 16)}`;
-      if (blocks.length === 128 || (!chunks.has(chunk) && chunks.size === 64)) { shards.push({ start: i - blocks.length, blocks }); blocks = []; chunks = new Set(); }
+      if (blocks.length === MAX_SHARD_ENTRIES || (!chunks.has(chunk) && chunks.size === 64)) { shards.push({ start: i - blocks.length, blocks }); blocks = []; chunks = new Set(); }
       blocks.push(item); chunks.add(chunk);
     }
     if (blocks.length) shards.push({ start: args.blocks.length - blocks.length, blocks });

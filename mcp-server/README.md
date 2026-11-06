@@ -7,19 +7,19 @@ MCP stdio server for the Minecraft MCP Fabric bridge. It exposes 28 standard MCP
 From a GitHub release tarball:
 
 ```bash
-npm install -g ./minecraft-mcp-server-2.0.0.tgz
+npm install -g ./minecraft-mcp-server-2.1.0.tgz
 ```
 
 Or run directly with `npx`:
 
 ```bash
 MINECRAFT_MCP_CONFIG=/path/to/minecraft-mcp.credentials.json \
-  npx -y ./minecraft-mcp-server-2.0.0.tgz
+  npx -y ./minecraft-mcp-server-2.1.0.tgz
 ```
 
 `MINECRAFT_MCP_CONFIG` must point at the credentials file written by the Fabric mod. Start Minecraft and enter a world before calling world tools.
 
-To see the in-game build process, install the matching Minecraft MCP Mod and Fabric API on both the server and viewing clients (once for singleplayer). Reads briefly highlight their exact requested range. Validated batches show translucent pending targets for 20 server ticks, then all writes process at most one candidate per tick. The activity HUD shows tool calls, operation progress, and errors. Previews are not world blocks or completion evidence; keep polling the same operation and verify by reading back.
+To see the in-game build process, install the matching Minecraft MCP Mod and Fabric API on both the server and viewing clients (once for singleplayer). Reads briefly highlight their exact requested range. Validated batches show translucent pending targets for 20 server ticks, then process up to 256 candidate blocks per tick by default (configurable 1–1024). The activity HUD shows tool calls, operation progress, and errors. Previews are not world blocks or completion evidence; keep polling the same operation and verify by reading back.
 
 ## OMP / Claude Desktop
 
@@ -50,6 +50,13 @@ If a submission response is lost, look up the operation with its original `world
 
 Sharded reads are incrementally sampled; their parent requests and results exist only in the current MCP server process. Conditional undo only restores directly recorded block states if the current state matches; it cannot detect ABA changes or restore block entity data and indirect effects.
 
-Sharded writes validate all targets before writing but are not transactions; their parent records are process-local. Screenshots use the dedicated account named by `camera_player` in `minecraft-mcp.json` (a separate fake/camera client), or an explicit online `player_uuid` when supplied. Set `camera_player` to keep captures independent of real players. Images may include chat and HUD.
+Sharded writes validate all targets before writing but are not transactions; their parent records are process-local, and each shard carries at most 8192 entries across 64 chunks. Screenshots use the dedicated account named by `camera_player` in `minecraft-mcp.json` (a separate fake/camera client), or an explicit online `player_uuid` when supplied. A `camera` pose switches that dedicated account to spectator and teleports it before capture; the target chunk must already be loaded. Images may include chat and HUD.
 
 See the repository `docs/tool-contracts.md` for full parameters, limits, and error semantics.
+
+The npm package also includes `tools/check-site.mjs`, which reads an expanded site box and exits nonzero when non-grass blocks remain. Run it from an installed package with:
+
+```bash
+node "$(npm root -g)/minecraft-mcp-server/tools/check-site.mjs" \
+  --dimension minecraft:overworld --min 126,-60,-48 --max 140,-43,-36 --margin 2
+```

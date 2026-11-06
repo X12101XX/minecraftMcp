@@ -228,7 +228,7 @@ public final class BridgeServer {
 
 	private JsonObject capture(String tool, JsonObject args) throws BridgeException {
 		boolean start = tool.equals("request_screenshot");
-		Json.only(args, start ? Set.of("world_session_id", "player_uuid", "request_id")
+		Json.only(args, start ? Set.of("world_session_id", "player_uuid", "camera", "request_id")
 				: Set.of("world_session_id", "capture_id"), "arguments");
 		String session = Json.string(args, "world_session_id", true, null);
 		if (!operations.sessionId().equals(session)) {
@@ -237,6 +237,12 @@ public final class BridgeServer {
 		String player = start && args.has("player_uuid") ? Json.string(args, "player_uuid", true, null) : null;
 		String request = start ? Json.string(args, "request_id", true, null) : null;
 		String id = start ? null : Json.string(args, "capture_id", true, null);
+		ScreenshotCoordinator.CameraPose pose = null;
+		if (start && args.has("camera")) {
+			if (player != null) throw BridgeException.invalid("camera cannot be combined with player_uuid");
+			pose = parseCamera(args.get("camera"));
+		}
+		ScreenshotCoordinator.CameraPose cameraPose = pose;
 		AtomicReference<byte[]> image = new AtomicReference<>();
 		JsonObject result = await(() -> {
 			try {
@@ -246,7 +252,7 @@ public final class BridgeServer {
 				if (start) {
 					String captureId;
 					if (player == null) {
-						captureId = screenshots.startBySelector(session, cameraPlayer, request);
+						captureId = screenshots.startBySelector(session, cameraPlayer, request, cameraPose);
 					} else {
 						UUID uuid = UUID.fromString(player);
 						if (!uuid.toString().equals(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
@@ -271,6 +277,31 @@ public final class BridgeServer {
 			}
 		});
 		if (image.get() != null) result.addProperty("image_base64", Base64.getEncoder().encodeToString(image.get()));
+		return result;
+	}
+
+	private static ScreenshotCoordinator.CameraPose parseCamera(com.google.gson.JsonElement element) throws BridgeException {
+		JsonObject camera = Json.object(element, "camera");
+		Json.only(camera, Set.of("dimension", "pos", "yaw", "pitch"), "camera");
+		String dimension = Json.string(camera, "dimension", true, null);
+		JsonObject pos = Json.object(camera.get("pos"), "camera.pos");
+		Json.only(pos, Set.of("x", "y", "z"), "camera.pos");
+		double x = cameraNumber(pos, "x", "camera.pos");
+		double y = cameraNumber(pos, "y", "camera.pos");
+		double z = cameraNumber(pos, "z", "camera.pos");
+		double yaw = camera.has("yaw") ? cameraNumber(camera, "yaw", "camera") : 0;
+		double pitch = camera.has("pitch") ? cameraNumber(camera, "pitch", "camera") : 0;
+		if (pitch < -90 || pitch > 90) throw BridgeException.invalid("camera.pitch must be between -90 and 90");
+		return new ScreenshotCoordinator.CameraPose(dimension, x, y, z, (float) yaw, (float) pitch);
+	}
+
+	private static double cameraNumber(JsonObject object, String field, String what) throws BridgeException {
+		com.google.gson.JsonElement value = object.get(field);
+		if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+			throw BridgeException.invalid(what + "." + field + " must be a number");
+		}
+		double result = value.getAsDouble();
+		if (!Double.isFinite(result)) throw BridgeException.invalid(what + "." + field + " must be finite");
 		return result;
 	}
 

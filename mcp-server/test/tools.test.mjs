@@ -58,6 +58,17 @@ test("request lookup requires session and canonical request ID", () => {
   assert.ok(!pattern.test("33333333-3333-4333-8333-33333333333A"));
 });
 
+test("screenshots can set a camera pose without a player UUID", () => {
+  const shot = TOOLS.find((candidate) => candidate.name === "request_screenshot");
+  assert.deepEqual(shot.inputSchema.required, ["world_session_id", "request_id"]);
+  const camera = shot.inputSchema.properties.camera;
+  assert.deepEqual(camera.required, ["dimension", "pos"]);
+  assert.equal(camera.properties.pos.properties.x.type, "number");
+  assert.equal(camera.properties.pos.properties.y.type, "number");
+  assert.equal(camera.properties.pos.properties.z.type, "number");
+  assert.equal(camera.additionalProperties, false);
+});
+
 test("bounds and enums match the bridge contract", () => {
   const batch = TOOLS.find((tool) => tool.name === "batch_set_blocks");
   assert.equal(batch.inputSchema.properties.blocks.maxItems, 8192);

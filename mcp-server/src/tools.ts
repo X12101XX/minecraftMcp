@@ -74,8 +74,18 @@ export const TOOLS: Tool[] = [
   {
     name: "request_screenshot",
     title: "Capture a camera view",
-    description: "Captures the configured camera account's current view, or an explicitly named online player when player_uuid is supplied. Configure camera_player in minecraft-mcp.json to use a dedicated fake/camera client instead of a real player. The image may include chat and HUD. Use the same request_id to recover a lost response.",
-    inputSchema: { type: "object", properties: { world_session_id: session, player_uuid: { type: "string", pattern: requestId.pattern, description: "Optional online player UUID. Omit to use the configured camera account." }, request_id: requestId }, required: ["world_session_id", "request_id"], additionalProperties: false },
+    description: "Captures the configured camera account's current view, or an explicitly named online player when player_uuid is supplied. With camera, the dedicated camera account is switched to spectator and teleported to the exact position/rotation first; this avoids moving a real player and prevents falling. The image may include chat and HUD.",
+    inputSchema: { type: "object", properties: {
+      world_session_id: session,
+      player_uuid: { type: "string", pattern: requestId.pattern, description: "Optional online player UUID. Omit to use the configured camera account." },
+      camera: { type: "object", properties: {
+        dimension,
+        pos: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, z: { type: "number" } }, required: ["x", "y", "z"], additionalProperties: false },
+        yaw: { type: "number", default: 0 },
+        pitch: { type: "number", default: 0 },
+      }, required: ["dimension", "pos"], additionalProperties: false },
+      request_id: requestId,
+    }, required: ["world_session_id", "request_id"], additionalProperties: false },
     annotations: { ...writeAnnotations, destructiveHint: false, title: "Capture a camera view" },
   },
   {

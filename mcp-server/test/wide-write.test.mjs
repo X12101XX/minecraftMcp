@@ -38,10 +38,23 @@ test('validates every shard before ordered writes across 8192 items and 64 chunk
   assert.ok(firstWrite > 1);
   assert.ok(bridge.calls.slice(0, firstWrite).every(call => call.name === 'validate_batch_states'));
   const writes = bridge.calls.slice(firstWrite);
-  assert.ok(writes.every(call => call.name === 'batch_set_blocks' && call.input.blocks.length <= 128));
+  assert.ok(writes.every(call => call.name === 'batch_set_blocks' && call.input.blocks.length <= 8192));
   assert.deepEqual(writes.flatMap(call => call.input.blocks.map(b => b.pos.x)), input.blocks.map(b => b.pos.x));
   assert.ok(writes.every(call => new Set(call.input.blocks.map(b => Math.floor(b.pos.x / 16))).size <= 64));
   await assert.rejects(wide.submit({ ...input, blocks: [block(0)] }), { code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+test('splits a contiguous batch at the 8192-entry shard limit', async () => {
+  const bridge = new FakeBridge(); const wide = new WideWriteCoordinator(bridge);
+  const blocks = Array.from({ length: 9000 }, (_, i) => ({ pos: { x: i % 16, y: Math.floor(i / 256), z: Math.floor(i / 16) % 16 }, block_state: { id: 'minecraft:stone' } }));
+  const { operation } = await wide.submit({ world_session_id: session, dimension: 'minecraft:overworld', request_id: request, blocks });
+  const done = await finished(wide, operation.operation_id);
+  assert.equal(done.state, 'succeeded'); assert.equal(done.counts.changed, 9000);
+  const validations = bridge.calls.filter(call => call.name === 'validate_batch_states');
+  const writes = bridge.calls.filter(call => call.name === 'batch_set_blocks');
+  assert.deepEqual(validations.map(call => call.input.blocks.length), [8192, 808]);
+  assert.deepEqual(writes.map(call => call.input.blocks.length), [8192, 808]);
+  assert.ok(bridge.calls.indexOf(writes[0]) > bridge.calls.indexOf(validations[1]));
 });
 
 test('a late validation error forbids every write and maps candidate indices', async () => {

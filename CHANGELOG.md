@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.0 — 2026-11-06
+
+### Added
+
+- `request_screenshot` 支持一次性 `camera` 位姿：服务端将专用相机账号切到旁观模式并传送到目标位置/朝向，失败时返回明确的越界、区块未加载或传送错误。
+- `scripts/camera-client.sh`：自动创建独立相机运行目录、关闭失焦暂停并连接指定服务器，不需要临时 init script。
+- `mcp-server/tools/check-site.mjs`：建前读取扩展净空区域，报告设计包围盒及 margin 内的残留方块，避免旧结构贴边。
+
+### Changed
+
+- 截图默认使用 `camera_player` 配置的专用相机账号，不再默认截取真实玩家；仍可显式传入 `player_uuid`。截图前会关闭自动弹出的暂停菜单。
+- `batch_set_blocks_sharded` 分片使用基础 batch 的完整容量（每片最多 8192 项及 64 区块），避免小片重复预览和调度开销。
+
+### Fixed
+
+- 相机账号已经处于旁观模式时不再误报 `SPECTATOR_UNAVAILABLE`；截图前验证实际模式。
+
 ## 2.0.0 — 2026-11-06
 
 ### Added
@@ -13,7 +30,6 @@
 
 ### Changed
 
-- 截图默认使用 `camera_player` 配置的专用相机账号，不再默认截取真实玩家；仍可显式传入 `player_uuid`。截图前会关闭自动弹出的暂停菜单。
 - 写速率改为可配置 `write_candidates_per_tick`，默认 256（1–1024），恢复约 5,000 方块/秒的批量吞吐；每 Tick 仍受约 2 ms 共享预算约束。
 - `SERVER_TICK_TIMEOUT` 现在明确报告请求已入队、Tick 停顿年龄与恢复提示；停顿超过 1 秒时最多等待约 2 秒。
 

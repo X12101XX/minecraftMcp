@@ -1617,7 +1617,7 @@ public final class OperationManager {
 		String dimension = Json.string(args, "dimension", true, null);
 		boolean onErrorContinue = parseOnError(args);
 		List<JsonObject> blocks = Json.objectArray(args, "blocks");
-		int limit = tool.equals("validate_batch_states") ? 128 : MAX_BATCH_ENTRIES;
+		int limit = MAX_BATCH_ENTRIES;
 		if (blocks.isEmpty() || blocks.size() > limit) {
 			throw BridgeException.invalid("blocks must contain between 1 and " + limit + " entries");
 		}

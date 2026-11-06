@@ -17,13 +17,13 @@ description: 当用户要求通过已连接的 Minecraft MCP 查看地形、选�
 
 1. **建立上下文**：get_world_info 获取 world_session_id、维度列表、限制；get_player_position 确认指定玩家及实际维度、位置、水平朝向。多人且未指定时不得随机选人。
 2. **勘察**：get_terrain 读取前方有界区域；使用 get_operation 等待，get_query_result 读取全部页。区分树冠/支撑面/水体/净空；用 get_region 确认选定区域实际方块。
-3. **规划**：在允许范围建立建筑坐标和完整期望映射，包含应为空气的室内、门窗开口、楼梯净空。按基础、主体、楼板、屋顶、附属细节形成依赖阶段。参见 [算法与验收](references/build-and-verify.md)。
+3. **规划**：在允许范围建立建筑坐标和完整期望映射，包含应为空气的室内、门窗开口、楼梯净空。按基础、主体、楼板、屋顶、附属细节形成依赖阶段。施工前用 `check-site.mjs` 或 `get_region` 检查设计包围盒**外加至少 2 格净空**，不能只验证自身包围盒，避免旧结构残留贴在旁边。参见 [算法与验收](references/build-and-verify.md)。
 4. **执行**：规则体积用 fill_region，异构细节用 batch_set_blocks；超出原生 batch 限制时用 `batch_set_blocks_sharded`，不逐块网络调用。分片父任务只在 MCP 进程内保留，跨进程重启或不确定结果时不得盲目重提。为提交保留唯一 request_id 和返回 operation_id。每阶段等待终态后再执行依赖阶段。
 5. **处理结果**：查看真实 changed/failed 等计数；获取所有错误页。部分失败不可当成功；取消不撤销已做修改。
 6. **验证**：等世界经过适当 Tick 后重读完整建筑范围，解码所有页，按 BlockState 比较，尤其检查朝向、半部、空气和额外方块。
    大范围区域可用 `get_region_sharded` 自动分片；每页的范围与偏移属于该分片，逐页解码重建整个区域。父任务仅在当前 MCP 进程保留，查询父 request ID 使用 `get_region_sharded_by_request_id`；采样跨 Tick、非原子。
    `undo_operation` 仅条件恢复记录的直接 BlockState；不能检测 ABA 或恢复方块实体 NBT、间接副作用，不等于事务回滚。
-   需要查看画面时，使用配置的专用相机账号截图（`camera_player`），不要默认截取真实玩家；截图可能包含聊天和 HUD。仅在用户授权的环境使用，不是任意坐标相机。
+   需要查看画面时，使用 `camera_player` 专用账号；`request_screenshot` 的 `camera` 参数会先切旁观并传送到指定位姿。至少从正面、左右侧、背面和顶部各截一张，逐张检查体块、屋顶、门窗和与周围结构的间距；不要用单张正面图判断完成。
 7. **修复**：只对差异提交修改，必要时带 expected_state。出现用户修改或反复物理变化则停止覆盖并报告。默认最多 3 轮修复，不能无限重试。
 8. **交付证据**：报告坐标/尺寸、任务终态、查询覆盖和剩余差异；没有保存重启验证就明确说明未验证持久化。
 
