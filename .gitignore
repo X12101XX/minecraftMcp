@@ -58,3 +58,7 @@ crash-reports/
 # Temporary files
 *.tmp
 *.temp
+
+# Dedicated screenshot camera run directory (generated at runtime)
+/integration/camera/*
+!/integration/camera/options.txt
