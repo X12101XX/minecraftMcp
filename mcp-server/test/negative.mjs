@@ -30,6 +30,8 @@ await expectError("unloaded-chunk", "get_block", { world_session_id: sid, dimens
 await expectError("invalid-block", "set_block", { world_session_id: sid, dimension: "minecraft:overworld", pos: { x: 0, y: -60, z: 0 }, block_state: { id: "minecraft:not_a_block" }, request_id: crypto.randomUUID() }, "INVALID_BLOCK_ID");
 await expectError("invalid-state", "set_block", { world_session_id: sid, dimension: "minecraft:overworld", pos: { x: 0, y: -60, z: 0 }, block_state: { id: "minecraft:stone", properties: { facing: "north" } }, request_id: crypto.randomUUID() }, "INVALID_BLOCK_STATE");
 await expectError("oversize-query", "get_region", { world_session_id: sid, dimension: "minecraft:overworld", min: { x: 0, y: -64, z: 0 }, max: { x: 200, y: 0, z: 200 }, request_id: crypto.randomUUID() }, "LIMIT_EXCEEDED");
+await expectError("preload-too-many-chunks", "preload_chunks", { world_session_id: sid, dimension: "minecraft:overworld", min: { x: 0, y: -60, z: 0 }, max: { x: 33 * 16 - 1, y: -60, z: 32 * 16 - 1 }, request_id: crypto.randomUUID() }, "LIMIT_EXCEEDED");
+await expectError("preload-out-of-bounds", "preload_chunks", { world_session_id: sid, dimension: "minecraft:overworld", min: { x: 0, y: 400, z: 0 }, max: { x: 0, y: 400, z: 0 }, request_id: crypto.randomUUID() }, "OUT_OF_BOUNDS");
 await expectError("wrong-session", "get_block", { world_session_id: "s-wrong", dimension: "minecraft:overworld", pos: { x: 0, y: -60, z: 0 } }, "WORLD_SESSION_MISMATCH");
 await expectError("unknown-tool", "not_a_tool", {}, "UNKNOWN_TOOL");
 await expectError("duplicate-position", "batch_set_blocks", { world_session_id: sid, dimension: "minecraft:overworld", request_id: crypto.randomUUID(), blocks: [

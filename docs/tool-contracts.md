@@ -8,8 +8,9 @@
 - 独立 TypeScript MCP Server 使用官方 SDK，通过 stdio 提供普通 `tools/list` 与 `tools/call`。协议版本、初始化和能力协商以选定 SDK 实际支持范围为准；不凭本文声称兼容某个未验证版本。
 - 不依赖实验性 MCP 长任务扩展。本文的 operation 是普通工具返回的应用层任务；客户端通过普通工具轮询。
 - 所有真实世界、玩家、区块、方块状态和碰撞形状的访问都在 Minecraft 服务端线程进行。后台工作只允许处理已脱离世界引用的 DTO，包括编码、压缩与分页。
-- 所有写操作固定异步；`get_region`、`get_terrain` 固定异步，即使只查询一个方块也不改成同步。其余三个小查询同步。异步查询和修改使用同一任务生命周期，但只有查询产生结果页。
-- 唯一支持的区块策略为 `loaded_only`：只读写执行时已加载的区块，绝不为了请求而生成、加载、保活或等待加载区块。不提供可切换为隐式加载的参数。
+- 所有写操作固定异步；`get_region`、`get_region_sharded`、`get_terrain` 固定异步，即使只查询一个方块也不改成同步。同步工具包括单位置查询和任务查询。异步查询和修改使用任务生命周期，但只有查询产生结果页。
+- 默认区块策略为 `loaded_only`：普通读写只访问执行时已加载的区块，绝不为了普通请求而隐式生成、加载、保活或等待区块。唯一显式例外是 `preload_chunks`：调用者主动请求有界区块框，服务端按 Tick 有界地添加加载票据并在成功后就绪；票据约 6,000 Tick 后过期，失败/取消/世界结束会移除本次添加的票据。
+- 显式预加载会生成缺失区块并写入存档；它是有副作用的操作，需要写权限（`allow_writes=false` 时拒绝）。普通查询与写入仍不会隐式加载。
 - JSON 属性、枚举、工具名采用本文给出的英文拼写；解释和面向用户的信息使用中文。标记“必需”的属性不得省略，所有未声明属性均拒绝，不进行字符串到数字等隐式类型转换。
 
 ## 2. 通用输入类型与硬限制
@@ -66,12 +67,13 @@
 | 一次区域修改 | 262,144 个候选坐标 | 填充和替换均按完整区域体积计算，不按预估匹配数计算 |
 | 一次批量设置 | 8,192 项 | `batch_set_blocks.blocks` 数组长度 |
 | 一次世界任务涉及区块 | 64 个 | 区域覆盖或批量位置去重后的 XZ 区块数；负坐标使用向下取整的区块换算 |
+| 一次显式预加载 | 1,024 个区块 | `preload_chunks` 请求框覆盖的区块数；加载票据约 6,000 Tick 后过期 |
 | 全局排队任务 | 32 个 | 不含已经开始执行的任务；不同客户端和读写任务共享队列容量 |
 | 内部桥请求体 | 2 MiB | 2,097,152 字节，接收时计量并拒绝超限；不接受压缩请求体绕过上限 |
 | 一页结果或错误响应 | 512 KiB | 524,288 字节，按实际 UTF-8 JSON 响应体计量，包含信封、palette 和游标 |
 | 终态保留期 | 5 分钟 | 进入终态后开始计时；读取、重试和取消请求不续期 |
 | 每 tick 工作预算 | 全局约 2 ms | 读写共享服务端线程调度预算，至少在每个工作单元之间检查；不承诺单个引擎调用可被中断 |
-| 每 tick 写入预算 | 全局最多 1 个执行阶段候选坐标 | 变更、无需变更、跳过与执行失败都消耗候选额度；batch 注册表预校验独立分片，全部通过后才开始执行 |
+| 每 tick 写入预算 | 默认 256 个执行阶段候选坐标，可在配置中设为 1–1024 | 变更、无需变更、跳过与执行失败都消耗候选额度；同时受 2 ms 全局预算截断。batch 注册表预校验独立分片，全部通过后才开始执行 |
 
 单次引擎调用和邻居更新可能超过约 2 ms；这不是硬实时保证。查询扫描也必须分片并计入全局时间预算，不能用“不修改方块”为理由在一个 tick 内扫描全部区域。
 
@@ -84,8 +86,8 @@
 世界卸载、切换、重新打开或服务端重启均产生新的 session。相同存档路径不代表相同 session；客户端必须重新 bootstrap，不得自动把旧写任务改投新 session。
 
 - `get_player_position` 必须提供 session，但不接受 dimension；玩家可以跨维度，响应携带其在读取时的实际 dimension。
-- `get_block`、两种大查询和所有修改必须同时提供 session 与 dimension；没有隐式主世界，也不推断玩家所在维度。
-- 四个任务管理工具必须提供任务所属的 session 与 operation ID，不接受 dimension，因为任务记录已固定维度。
+- `get_block`、`get_biome`、`get_light`、区域/地形查询和所有修改必须同时提供 session 与 dimension；没有隐式主世界，也不推断玩家所在维度。
+- 任务管理工具必须提供任务所属的 session；按请求查询使用 request_id，其余使用 operation ID。不接受 dimension，因为任务记录已固定维度。分片父任务使用独立的按请求查询工具。
 - 世界调用的旧 session 返回 `WORLD_SESSION_MISMATCH`；session 匹配但世界未就绪返回 `WORLD_NOT_READY`。
 - session 终止时，不再接受新任务，未完成任务在内存中以 `WORLD_SESSION_ENDED` 终止并停止世界访问，随后清理任务、结果页、错误页、幂等记录及网络监听。客户端可能来不及观察终态，不能承诺关服后可读取旧任务，也不承诺跨 session 保留结果。
 - 世界结束或进程重启后不保留任务、幂等记录或结果页。桥关闭时返回连接层 `BRIDGE_UNAVAILABLE`；新桥中查询旧任务，或任务不存在/已过期时统一返回 `OPERATION_NOT_FOUND`，不能把“查不到”解释成“没有执行过”。TTL 保留承诺仅适用于同一存活 session，生命周期终止优先于 TTL。
@@ -156,7 +158,7 @@
 - `processed`：已经得到成功、跳过或失败结论的候选坐标数，不包含尚未处理部分。
 - `succeeded`：读取成功或写入成功处理的坐标数。
 - `changed`：写任务中实际由本任务改变 block state 的坐标数，不包含邻居更新引起的其他坐标改变。
-- `unchanged`：写任务中目标状态已相同、未执行状态修改的坐标数。写任务满足 `succeeded = changed + unchanged`；读任务的 changed、unchanged 均为 0。
+- `unchanged`：写任务中目标状态已相同、未执行状态修改的坐标数。正常成功时 `succeeded = changed + unchanged`；写后观察到状态变化但调用失败或副作用未知时，`changed` 可包含失败候选，不能隐去已观察到的修改。读任务的 changed、unchanged 均为 0。
 - `skipped`：仅用于 replace 的过滤条件未匹配；其他工具正常情况下为 0。区块未加载不得伪装为 skipped 或空气。
 - `failed`：定位到候选坐标的执行失败数。不能定位到候选坐标的任务级故障仅计入错误记录，不虚增 processed/failed。
 
@@ -171,7 +173,7 @@
 3. 相同键、相同规范化内容返回原任务的当前记录，包括原有终态和 operation ID，不重复读写；相同键、不同内容返回 `IDEMPOTENCY_CONFLICT`。
 4. 接受任务前发生的校验失败、队列满或请求过大不占用 request_id；只有成功接受的任务具有幂等记录。
 5. 幂等记录与任务共同保留：活动任务不因 5 分钟到期而丢失，终态保留 5 分钟。TTL 之后复用键可能产生新任务，因此客户端必须把未知结果当作不确定，不能把 TTL 后重提当成安全恢复；一个逻辑新动作必须使用新 UUID。
-6. 响应丢失时，在保留期内使用相同键与相同参数重提。查询是同一份采集任务，而不是隐式刷新数据；需要刷新时使用新键。
+6. 响应丢失时，可在同一会话保留期内使用 `get_operation_by_request_id` 查找任务；查不到并不证明任务未被接受或未产生副作用。也可在确认仍处于保留期内时使用相同键与相同参数重提，返回原任务。查询是同一份采集任务，而不是隐式刷新数据；需要刷新时使用新键。
 
 ### 4.5 分页公共规则
 
@@ -185,7 +187,7 @@
 
 观看者客户端与服务端均安装当前构建的 Mod + Fabric API，单人集成世界安装一次即可。无需额外预览工具或逐方块网络请求：`get_block` 标出单方块，`get_region` / `get_terrain` 标出与请求 min/max 相同的包含边界框，按 30 Tick × 50 ms 的客户端本地时长淡出。工具标签、玩家查询、bootstrap、分页和任务轮询显示在活动面板；每服务端 Tick 的同工具通知合并，已认证请求的同步验证失败显示红色错误码（同 Tick 多个同步错误只显示最近一个）。
 
-五个写工具共用串行执行器，每 Tick 最多处理一个候选；区域按 X、Z、Y 顺序，batch 严格保留输入顺序。不变、过滤跳过、条件失败不播放伪造的成功落位。正常更新、邻居变化、保存、计数、部分失败和取消不回滚的语义保持不变。
+原有五个写工具及条件恢复共用串行执行器，每个 Tick 在 2 ms 预算内处理最多 256 个候选（可配置 1–1024）；区域按 X、Z、Y 顺序，batch 严格保留输入顺序，条件恢复逆序处理记录。不变、过滤跳过、条件失败不播放伪造的成功落位。正常更新、邻居变化、保存、计数、部分失败和取消不自动回滚的语义保持不变。
 
 `batch_set_blocks` 在所有目标/expected_state 注册表预校验成功后发布待放列表，等待 **20 个服务端 Tick** 才开始执行；这段时间 state 为 running，processed 仍为 0。非法后续片段必须阻止整个批次的任何写入/目标模型。目标模型是可交互世界之外的半透明预览；普通状态使用真实烘焙模型，特殊渲染目标使用真实形状的半透明光体，空气用删除框表示。处理一个候选后移除该项；完成、取消、失败时清掉剩余预览。
 
@@ -194,7 +196,7 @@
 原版客户端仍看到真实逐块世界更新，但没有自定义展示。HUD/光效/幽灵模型都不证明任务完成，仍须轮询并回读；客户端慢帧、丢失观察时机或离得太远可能看不到每次短时提示，不能将显示帧率当作服务端处理计数。
 
 
-## 5. 十个世界工具
+## 5. 世界工具
 
 以下调用使用普通 `tools/call` 的 `{name, arguments}` 形状；外层 JSON-RPC ID 和版本由 SDK 处理。示例 `s-example`、`op-*` 是服务端标识符的示意值。
 
@@ -215,12 +217,12 @@
   "world_session_id":"s-example",
   "dimensions":[{"id":"minecraft:overworld","min_y":-64,"max_y_exclusive":320,"min_x":-29999984,"max_x":29999983,"min_z":-29999984,"max_z":29999983}],
   "players":[{"player_uuid":"22222222-2222-4222-8222-222222222222","name":"Builder"}],
-  "limits":{"query_voxels":65536,"write_voxels":262144,"batch_entries":8192,"chunks_per_operation":64,"queued_operations":32,"request_bytes":2097152,"page_bytes":524288,"terminal_ttl_seconds":300,"tick_budget_ms":2,"write_candidates_per_tick":1},
-  "supported_tools":["get_world_info","get_player_position","get_block","get_region","get_terrain","set_block","remove_block","fill_region","replace_blocks","batch_set_blocks","get_operation","cancel_operation","get_operation_errors","get_query_result"]
+  "limits":{"query_voxels":65536,"write_voxels":262144,"batch_entries":8192,"undo_journal_entries":1048576,"chunks_per_operation":64,"queued_operations":32,"request_bytes":2097152,"page_bytes":524288,"terminal_ttl_seconds":300,"tick_budget_ms":2,"write_candidates_per_tick":256},
+  "supported_tools":["get_world_info","get_player_position","get_entity","get_block","get_biome","get_light","preload_chunks","get_region","get_terrain","set_block","remove_block","fill_region","replace_blocks","batch_set_blocks","undo_operation","get_operation","get_operation_by_request_id","cancel_operation","get_operation_errors","get_query_result","request_screenshot","get_screenshot_status","get_screenshot","cancel_screenshot"]
 }
 ```
 
-具体维度、构建高度和坐标范围必须来自实际版本/世界，不把示例值写死。`supported_tools` 只列出当前可调用工具。桥关闭时返回 `BRIDGE_UNAVAILABLE`，不返回伪造的就绪响应。
+具体维度、构建高度和坐标范围必须来自实际版本/世界，不把示例值写死。`supported_tools` 列出 bridge 提供的工具；MCP Server 另提供进程内分片工具。桥关闭时返回 `BRIDGE_UNAVAILABLE`，不返回伪造的就绪响应。
 
 ### 5.2 `get_player_position`
 
@@ -251,6 +253,30 @@
 ```
 
 `is_air` 使用引擎的空气判断。`fluid` 基于该位置实际 fluid state；空 fluid 的 id/is_source 为 null，非空时 id 为注册流体标识符、is_source 为布尔值。`has_collision` 表示该位置使用无实体上下文查询得到的碰撞形状非空，不代表整块实心、可站立或对所有实体都相同。
+
+### `get_entity`
+
+必需 `world_session_id`、`dimension` 和小写规范 `entity_uuid`。同步从该维度当前可访问的实体索引返回 UUID、类型、位置和 `observed_tick`，不加载区块或读取 NBT。`ENTITY_NOT_FOUND_OR_UNLOADED` 表示未在可访问索引找到，不能断言实体不存在；此工具不提供区域枚举。
+
+```json
+{"name":"get_entity","arguments":{"world_session_id":"s-example","dimension":"minecraft:overworld","entity_uuid":"22222222-2222-4222-8222-222222222222"}}
+```
+
+### 单位置 `get_biome` 与 `get_light`
+
+两个同步工具均要求 `world_session_id`、`dimension`、`pos`，不隐式加载区块；返回会话、维度、位置与 `observed_tick`。例如：
+
+```json
+{"name":"get_biome","arguments":{"world_session_id":"s-example","dimension":"minecraft:overworld","pos":{"x":0,"y":64,"z":0}}}
+```
+
+`get_biome` 返回 `biome_id`：目标区块中对应的 4×4×4 噪声生物群系单元，不等同于可能采样邻近区块的平滑后位置生物群系。`get_light` 返回 `block_light`、`sky_light` 和按服务端当前天空暗度计算的 `raw_brightness`；这些是当前光照引擎快照，传播可能尚未完成。区块光照未初始化时返回可重试 `LIGHT_NOT_READY`。无天空光的维度遵循该维度引擎值，不伪造主世界光照。
+
+### `get_region_sharded`
+
+参数与 `get_region` 一致；MCP Server 按已公布的桥接限制分割后依次读取，最多 1,048,576 体素、4096 个分片。父任务支持普通任务轮询、取消和结果分页。每一结果页的 `min`、`max`、`offset` 和调色板描述该分片，不是整块区域；必须结合分片范围重建全区域。分片间和分片内均为增量采样，不是原子快照；任何分片失败或取消时不提供不完整结果。
+
+父任务及冻结页面只保存在当前 MCP Server 进程，终态保留 5 分钟，最多 8 个任务共享 64 MiB 结果预算。父请求 ID 在独立命名空间，用 `get_region_sharded_by_request_id` 查询；进程重启即丢失。子请求提交结果无法确认时，父任务返回 `SUBMISSION_OUTCOME_UNKNOWN`、子 request ID 和不确定标记；不能据此声称子任务已取消。
 
 ### 5.4 `get_region`
 
@@ -336,6 +362,18 @@
 - 默认 on_error=stop：首次坐标级错误后停止，保留已修改部分；continue：记录明确无副作用的坐标级拒绝或前置条件不匹配，继续后续坐标，最终仍为 failed。任务级故障、session 结束、区块卸载、越界或未知副作用无论 on_error 均立即停止。无法确认副作用状态的引擎异常标记 `WRITE_OUTCOME_UNKNOWN`，不得自动重试该坐标或宣称未发生修改。
 - 计数只涵盖能够确认的结果；`WRITE_OUTCOME_UNKNOWN` 的错误记录标记 `effect_unknown=true`，counts.changed 不能被当作全部副作用的精确上界。
 
+### `preload_chunks` 显式区块预加载
+
+必需 `world_session_id`、`dimension`、`min`、`max`、`request_id`。`min`/`max` 是包含边界的方块坐标框，服务端按 `x>>4`、`z>>4`（向下取整）换算覆盖的区块，最多 1,024 个；超出、倒置或世界边界外直接拒绝。
+
+这是普通异步任务，`kind=load`，`counts.total` 为区块数，`processed`/`succeeded` 为已确认加载的区块数。服务端在服务端线程按 Tick 有界地添加非持久化加载票据并轮询完整加载；只有全部区块 `hasChunk` 且 `getChunkNow` 非空时才算 `succeeded`，不会伪造完成。超时返回 `CHUNK_LOAD_TIMEOUT`；取消、失败或世界结束会移除本次任务添加的票据，成功的票据保留到约 6,000 Tick 后自然过期。
+
+预加载会生成缺失区块并进入正常保存路径；成功之后、票据过期之前的普通查询和写入可访问这些区块。它不是事务，也不改变普通工具“未加载即报错”的行为。
+
+```json
+{"name":"preload_chunks","arguments":{"world_session_id":"s-example","dimension":"minecraft:overworld","min":{"x":3008,"y":-60,"z":3008},"max":{"x":3023,"y":-60,"z":3023},"request_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}
+```
+
 ### 5.7 `set_block`
 
 **必需：** `world_session_id`、`dimension`、`pos`、`block_state`、`request_id`。**可选：** `expected_state`（默认不检查）、`on_error`（默认 stop）；block_state.properties 可省略并使用真实默认状态补全。counts.total=1。
@@ -414,7 +452,33 @@
 {"total":2,"processed":2,"succeeded":1,"changed":1,"unchanged":0,"skipped":0,"failed":1}
 ```
 
-## 6. 四个任务管理工具
+### `batch_set_blocks_sharded`
+
+与 `batch_set_blocks` 使用相同参数，每次最多 16,384 个不同坐标，输入 JSON 最多 1,900,000 字节。MCP Server 先将所有子片提交至真实注册表逐 Tick 预校验，全部通过后才按输入顺序执行；每片最多 128 项及 64 区块，每片执行前预览 20 Tick。全部目标和期望状态预校验不意味着执行时区块、预期状态或世界不会变化；执行、失败及取消均非事务。
+
+父任务由 MCP Server 在内存中维护，最多 8 个保留任务、终态 TTL 5 分钟；使用 `batch_set_blocks_sharded_by_request_id` 在该进程查询父任务，正常任务工具查询父状态及错误页。子请求提交无法确定时暴露子 request ID 和不确定状态，不自动重放；父进程重启丢失记录，应重读世界。
+
+### 客户端截图
+
+`request_screenshot` 参数为 `world_session_id`、目标在线玩家的小写 `player_uuid` 和 `request_id`；返回 `capture_id`。相同请求 ID 和玩家在保留期内返回同一 capture，不同玩家冲突。客户端直接截图，不显示授权提示；画面可能包含 HUD、聊天等隐私，持有 MCP 凭据即可请求。同一玩家最多一个待处理请求，全局最多四个保留请求；等待 30 秒，终态保留 60 秒。
+
+用 `get_screenshot_status`、`cancel_screenshot` 或 `get_screenshot` 携带 session 和 capture ID。成功获取返回 MCP `image/png` image content；PNG 最多 4 MiB、800 万像素，不受普通查询页 512 KiB 限制。服务端验证连接玩家、会话、请求、分片序列和图片；结果 60 秒内可重复取回。截图为客户端自报的当前渲染视角，不保证恶意客户端数据真实，不能用于反作弊；不提供远程相机控制。
+
+```json
+{"name":"request_screenshot","arguments":{"world_session_id":"s-example","player_uuid":"22222222-2222-4222-8222-222222222222","request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
+```
+
+### `undo_operation` 条件状态恢复
+
+必需 `world_session_id`、`dimension`、源写任务 `operation_id` 和新 `request_id`；可选 `on_error`。源任务须为当前会话、相同维度内已终态写任务。响应为普通异步写任务，逆序处理源日志，在每个坐标执行时比较完整当前状态与记录的写后状态，不匹配返回 `PRECONDITION_FAILED`。有方块实体、未知写入结果等不安全条目返回 `UNDO_UNSAFE`；逐项错误和终态必须检查。
+
+这不是事务回滚：状态比较无法检测其他修改后又回到相同状态的 ABA，无法恢复方块实体 NBT、物品、邻居更新和其他间接副作用。取消或失败后已恢复部分保留。日志记录直接尝试写入的前后状态，写任务接收时预留全局最多 1,048,576 条容量；容量不足返回 `RESOURCE_EXHAUSTED`。日志随源任务终态 TTL 及 session 失效，正在使用的源日志保留到恢复任务终态；不会跨重启保留。
+
+```json
+{"name":"undo_operation","arguments":{"world_session_id":"s-example","dimension":"minecraft:overworld","operation_id":"op-source","request_id":"99999999-9999-4999-8999-999999999999","on_error":"stop"}}
+```
+
+## 6. 任务管理工具
 
 ### 6.1 `get_operation`
 
@@ -437,6 +501,10 @@
 ```
 
 这里 MCP `isError=false`：轮询成功取得一个失败任务，不等于工具调用失败。
+
+### 按请求 ID 查询 `get_operation_by_request_id`
+
+**必需：** `world_session_id` 和原异步提交的 `request_id`。返回与 `get_operation` 相同的完整 operation 信封；未知或过期记录返回 `OPERATION_NOT_FOUND`。该查询只覆盖当前存活会话中的已接受任务：查不到不能证明提交从未被接受或没有副作用，重启或切换会话后应重新读取真实世界。
 
 ### 6.2 `cancel_operation`
 
@@ -545,7 +613,8 @@
 | `DIMENSION_NOT_FOUND` | 维度未注册或不可用 | false |
 | `PLAYER_NOT_FOUND` | 指定玩家不在线 | false |
 | `PLAYER_REQUIRED` | 未指定玩家且在线人数不为一，或明确选择存在歧义 | false；指定唯一 UUID 或账户名称 |
-| `CHUNK_NOT_LOADED` | 提交校验或执行时目标区块未加载 | false；不得隐式加载或自动等待 |
+| `CHUNK_NOT_LOADED` | 提交校验或执行时目标区块未加载 | false；不得隐式加载或自动等待；需要远端区域时显式调用 `preload_chunks` |
+| `CHUNK_LOAD_TIMEOUT` | 显式预加载在约 6,000 Tick 内未完成 | false；检查服务端负载；已添加的票据由任务清理 |
 | `LIMIT_EXCEEDED` | 体素、项数、区块数超限 | false；由调用者明确拆分 |
 | `REQUEST_TOO_LARGE` | 请求超过 2 MiB | false |
 | `QUEUE_FULL` | 全局等待队列已满 | true；尚未创建任务 |
@@ -560,7 +629,7 @@
 | `WRITE_REJECTED` | 引擎/策略明确拒绝某一坐标写入且确认未发生该写入 | false；记录坐标错误 |
 | `WRITE_OUTCOME_UNKNOWN` | 引擎异常导致无法确认是否已发生副作用 | false；停止任务，禁止自动重试 |
 | `PARTIAL_FAILURE` | 已处理部分坐标但至少一个失败 | false；终态摘要，详情分页 |
-| `SERVER_TICK_TIMEOUT` | 服务端在 15 秒内未处理内部请求；暂停或卡顿时可能已接受任务 | true；先用相同 request_id 查询/重试，再决定是否重报 |
+| `SERVER_TICK_TIMEOUT` | 服务端 Tick 未及时处理请求；请求已入队并保持 accepted，details 含 `accepted`、`queued`、`server_tick_age_ms`、`tick_stalled`。Tick 明显停顿时最多等待约 2 秒 | true；用相同 request_id 查询已有任务，不要当作新动作重报 |
 | `BRIDGE_UNAVAILABLE` | MCP Server 无法连接 Mod 内部桥（MCP 层错误） | true；确认游戏与世界已启动 |
 | `BRIDGE_RESPONSE_INVALID` | 内部桥返回无法解析的响应（MCP 层错误） | false；检查版本与日志 |
 | `INTERNAL_ERROR` | 其他未预期内部错误 | false；对外不泄露异常堆栈 |

@@ -5,6 +5,7 @@ import dev.mcmcp.bridge.BridgeServer;
 import dev.mcmcp.bridge.CursorCodec;
 import dev.mcmcp.config.BridgeConfig;
 import dev.mcmcp.operation.OperationManager;
+import dev.mcmcp.screenshot.ScreenshotCoordinator;
 import net.minecraft.server.MinecraftServer;
 
 import java.security.SecureRandom;
@@ -14,6 +15,7 @@ import java.util.Base64;
 public final class GameSession {
 	private final String sessionId;
 	private final OperationManager operations;
+	private final ScreenshotCoordinator screenshots;
 	private BridgeServer bridge;
 	private boolean stopped;
 
@@ -24,9 +26,10 @@ public final class GameSession {
 		random.nextBytes(sessionBytes);
 		random.nextBytes(cursorSecret);
 		this.sessionId = "s-" + Base64.getUrlEncoder().withoutPadding().encodeToString(sessionBytes);
+		this.screenshots = new ScreenshotCoordinator(server, sessionId);
 		GameAccess access = new GameAccess(server);
 		this.operations = new OperationManager(access, sessionId, new CursorCodec(cursorSecret, sessionId),
-				config.allowWrites);
+				config.allowWrites, config.writeCandidatesPerTick);
 	}
 
 	public static GameSession start(MinecraftServer server) {
@@ -39,7 +42,7 @@ public final class GameSession {
 		}
 		GameSession session = new GameSession(server, config);
 		try {
-			session.bridge = new BridgeServer(config, session.operations);
+			session.bridge = new BridgeServer(config, session.operations, session.screenshots);
 			session.bridge.start();
 			MinecraftMcpMod.LOGGER.info("Minecraft MCP bridge listening on {} (session {})",
 					config.url(), session.sessionId);
@@ -50,6 +53,7 @@ public final class GameSession {
 		} catch (Exception e) {
 			MinecraftMcpMod.LOGGER.error("Could not start Minecraft MCP bridge on {}; world access remains offline",
 					config.url(), e);
+			session.shutdown();
 			return null;
 		}
 		return session;
@@ -58,6 +62,7 @@ public final class GameSession {
 	public void tick() {
 		if (!stopped) {
 			operations.tick();
+			screenshots.tick();
 		}
 	}
 
@@ -66,6 +71,11 @@ public final class GameSession {
 			return;
 		}
 		stopped = true;
+		try {
+			screenshots.shutdown();
+		} catch (Throwable t) {
+			MinecraftMcpMod.LOGGER.error("Error while closing screenshot coordinator", t);
+		}
 		try {
 			operations.shutdown();
 		} catch (Throwable t) {

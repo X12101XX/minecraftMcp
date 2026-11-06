@@ -51,6 +51,7 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 	private volatile Frame frame = new Frame(List.of(), List.of());
 
 	@Override public void onInitializeClient() {
+		new ScreenshotClient().register();
 		ClientPlayNetworking.registerGlobalReceiver(VisualPayload.TYPE, (payload, context) -> context.client().execute(() -> receive(payload)));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> reset());
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {

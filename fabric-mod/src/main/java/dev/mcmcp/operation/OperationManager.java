@@ -9,6 +9,7 @@ import dev.mcmcp.MinecraftMcpMod;
 import dev.mcmcp.bridge.BridgeException;
 import dev.mcmcp.bridge.CursorCodec;
 import dev.mcmcp.bridge.Json;
+import dev.mcmcp.game.EntityAccess;
 import dev.mcmcp.game.GameAccess;
 import dev.mcmcp.query.BlockStateKey;
 import dev.mcmcp.query.RegionSnapshot;
@@ -19,6 +20,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.TicketType;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -28,6 +31,7 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,13 +52,26 @@ public final class OperationManager {
 	public static final int MAX_QUERY_VOXELS = 65_536;
 	public static final int MAX_WRITE_VOXELS = 262_144;
 	public static final int MAX_BATCH_ENTRIES = 8_192;
+	public static final int MAX_UNDO_JOURNAL_ENTRIES = 1_048_576;
 	public static final int MAX_CHUNKS = 64;
+	public static final int MAX_PRELOAD_CHUNKS = 1_024;
+	public static final int PRELOAD_TICKET_TIMEOUT_TICKS = 6_000;
 	public static final int MAX_QUEUED = 32;
 	public static final int MAX_ACTIVE_READS = 4;
-	public static final int WRITE_CANDIDATES_PER_TICK = 1;
+	public static final int DEFAULT_WRITE_CANDIDATES_PER_TICK = 1;
 	public static final long TICK_BUDGET_NANOS = 2_000_000L;
 	private static final int MAX_IMMEDIATE_TASKS_PER_TICK = 128;
+	private static final int MAX_ACTIVE_PRELOADS = 2;
+	private static final int PRELOAD_TICKETS_PER_TICK = 64;
+	private static final int PRELOAD_CHECKS_PER_TICK = 512;
+	private static final int MAX_TRACKED_PRELOAD_CHUNKS = PreloadTicketLeases.DEFAULT_CAPACITY;
 	private static final SecureRandom RANDOM = new SecureRandom();
+
+	/** Holds the custom ticket type until the first server-thread use. */
+	private static final class PreloadTicket {
+		private static final TicketType TYPE =
+				new TicketType(PRELOAD_TICKET_TIMEOUT_TICKS, TicketType.FLAG_LOADING);
+	}
 
 	@FunctionalInterface
 	public interface ServerCall {
@@ -65,14 +82,19 @@ public final class OperationManager {
 	private final String sessionId;
 	private final CursorCodec cursors;
 	private final boolean allowWrites;
+	private final int writeCandidatesPerTick;
 	private final VisualEvents visuals;
 	private final BlockingQueue<Runnable> immediate = new ArrayBlockingQueue<>(128);
 	private final List<Operation> pendingReads = new ArrayList<>();
 	private final List<Operation> pendingWrites = new ArrayList<>();
 	private final List<Operation> activeReads = new ArrayList<>();
+	private final List<Operation> pendingLoads = new ArrayList<>();
+	private final List<Operation> activeLoads = new ArrayList<>();
 	private Operation activeWrite;
 	private final Map<String, Operation> operations = new ConcurrentHashMap<>();
+	private final Map<ServerLevel, PreloadTicketLeases> preloadLeases = new IdentityHashMap<>();
 	private final Map<String, IdempotencyRecord> idempotency = new ConcurrentHashMap<>();
+	private int reservedUndoEntries;
 	private boolean shuttingDown;
 	private long workTicks;
 	private long workNanosTotal;
@@ -80,17 +102,30 @@ public final class OperationManager {
 	private long lastWorkNanos;
 	private int lastWriteCandidates;
 	private int lastReadVoxels;
+	private volatile long lastTickNanos = -1L;
 
 	public OperationManager(GameAccess access, String sessionId, CursorCodec cursors, boolean allowWrites) {
+		this(access, sessionId, cursors, allowWrites, DEFAULT_WRITE_CANDIDATES_PER_TICK);
+	}
+
+	public OperationManager(GameAccess access, String sessionId, CursorCodec cursors, boolean allowWrites,
+			int writeCandidatesPerTick) {
 		this.access = access;
 		this.sessionId = sessionId;
 		this.cursors = cursors;
 		this.allowWrites = allowWrites;
+		this.writeCandidatesPerTick = Math.max(1, writeCandidatesPerTick);
 		this.visuals = new VisualEvents(access.server(), sessionId);
 	}
 
 	public String sessionId() {
 		return sessionId;
+	}
+
+	/** Milliseconds since the last server-tick scheduler pass, or -1 if none has run yet. */
+	public long tickAgeMillis() {
+		long last = lastTickNanos;
+		return last < 0 ? -1 : (System.nanoTime() - last) / 1_000_000L;
 	}
 
 	public void reportError(String code) {
@@ -163,6 +198,17 @@ public final class OperationManager {
 		return root;
 	}
 
+	public JsonObject getEntity(JsonObject args) throws BridgeException {
+		Json.only(args, Set.of("world_session_id", "dimension", "entity_uuid"), "arguments");
+		requireSession(args);
+		String dimension = Json.string(args, "dimension", true, null);
+		String entityUuid = Json.string(args, "entity_uuid", true, null);
+		JsonObject result = EntityAccess.getEntity(access, dimension, entityUuid);
+		result.addProperty("ok", true);
+		result.addProperty("world_session_id", sessionId);
+		return result;
+	}
+
 	public JsonObject getBlock(JsonObject args) throws BridgeException {
 		Json.only(args, Set.of("world_session_id", "dimension", "pos"), "arguments");
 		requireSession(args);
@@ -182,6 +228,32 @@ public final class OperationManager {
 		visuals.range(dimension, "block", pos[0], pos[1], pos[2], pos[0], pos[1], pos[2], "read", 30);
 		facts.entrySet().forEach(entry -> root.add(entry.getKey(), entry.getValue()));
 		root.addProperty("observed_tick", access.tick());
+		return root;
+	}
+
+	public JsonObject getBiomeOrLight(String tool, JsonObject args) throws BridgeException {
+		Json.only(args, Set.of("world_session_id", "dimension", "pos"), "arguments");
+		requireSession(args);
+		String dimension = Json.string(args, "dimension", true, null);
+		int[] pos = Json.position(args, "pos", true);
+		ServerLevel level = access.level(dimension);
+		access.requireInBounds(level, pos[0], pos[1], pos[2]);
+		access.requireChunk(level, pos[0], pos[1], pos[2]);
+		BlockPos blockPos = new BlockPos(pos[0], pos[1], pos[2]);
+		JsonObject facts = switch (tool) {
+			case "get_biome" -> access.biomeFacts(level, blockPos);
+			case "get_light" -> access.lightFacts(level, blockPos);
+			default -> throw BridgeException.of("UNKNOWN_TOOL", "unknown tool", null);
+		};
+		JsonObject root = new JsonObject();
+		root.addProperty("ok", true);
+		root.addProperty("world_session_id", sessionId);
+		root.addProperty("dimension", dimension);
+		root.add("pos", Json.pos(pos[0], pos[1], pos[2]));
+		facts.entrySet().forEach(entry -> root.add(entry.getKey(), entry.getValue()));
+		root.addProperty("observed_tick", access.tick());
+		visuals.notice(tool);
+		visuals.range(dimension, "block", pos[0], pos[1], pos[2], pos[0], pos[1], pos[2], "read", 30);
 		return root;
 	}
 
@@ -214,9 +286,10 @@ public final class OperationManager {
 				return original.envelope();
 			}
 		}
-		if (pendingReads.size() + pendingWrites.size() >= MAX_QUEUED) {
+		if (pendingReads.size() + pendingWrites.size() + pendingLoads.size() >= MAX_QUEUED) {
 			JsonObject details = new JsonObject();
-			details.addProperty("queued", pendingReads.size() + pendingWrites.size());
+			int queued = pendingReads.size() + pendingWrites.size() + pendingLoads.size();
+			details.addProperty("queued", queued);
 			details.addProperty("limit", MAX_QUEUED);
 			throw BridgeException.of("QUEUE_FULL", "operation queue is full", details);
 		}
@@ -224,17 +297,29 @@ public final class OperationManager {
 		Operation op = switch (tool) {
 			case "get_region" -> createRegion(args, requestId);
 			case "get_terrain" -> createTerrain(args, requestId);
+			case "preload_chunks" -> createPreload(args, requestId);
 			case "set_block" -> createSet(args, requestId, false);
 			case "remove_block" -> createSet(args, requestId, true);
 			case "fill_region" -> createFill(args, requestId, false);
 			case "replace_blocks" -> createFill(args, requestId, true);
-			case "batch_set_blocks" -> createBatch(args, requestId);
+			case "undo_operation" -> createUndo(args, requestId);
+			case "batch_set_blocks", "validate_batch_states" -> createBatch(tool, args, requestId);
 			default -> throw BridgeException.of("UNKNOWN_TOOL", "unknown tool", null);
 		};
+		if (op.isWrite()) {
+			if (op.total > MAX_UNDO_JOURNAL_ENTRIES - reservedUndoEntries) {
+				throw BridgeException.of("RESOURCE_EXHAUSTED",
+						"undo journal capacity is reserved by other operations", null);
+			}
+			op.reservedUndoEntries = op.total;
+			reservedUndoEntries += op.total;
+		}
 		visuals.notice(tool);
 		operations.put(op.id, op);
 		idempotency.put(requestId, new IdempotencyRecord(canonical, op.id));
-		if (op.isRead()) {
+		if (op.isLoad()) {
+			pendingLoads.add(op);
+		} else if (op.isRead()) {
 			visuals.range(op.dimension, op.id, op.minX, op.minY, op.minZ, op.maxX, op.maxY, op.maxZ, "read", 30);
 			pendingReads.add(op);
 		} else {
@@ -251,6 +336,21 @@ public final class OperationManager {
 		return op.envelope();
 	}
 
+	public JsonObject getOperationByRequestId(JsonObject args) throws BridgeException {
+		Json.only(args, Set.of("world_session_id", "request_id"), "arguments");
+		requireSession(args);
+		String requestId = requireRequestId(args);
+		IdempotencyRecord record = idempotency.get(requestId);
+		Operation op = record == null ? null : operations.get(record.operationId);
+		if (op == null) {
+			JsonObject details = new JsonObject();
+			details.addProperty("request_id", requestId);
+			throw BridgeException.of("OPERATION_NOT_FOUND", "request was not accepted or has expired", details);
+		}
+		visuals.notice("get_operation_by_request_id");
+		return op.envelope();
+	}
+
 	public JsonObject cancelOperation(JsonObject args) throws BridgeException {
 		Json.only(args, Set.of("world_session_id", "operation_id"), "arguments");
 		requireSession(args);
@@ -263,6 +363,7 @@ public final class OperationManager {
 			op.cancelRequested = true;
 			pendingReads.remove(op);
 			pendingWrites.remove(op);
+			pendingLoads.remove(op);
 			requested = true;
 			if (op.state() == Operation.State.QUEUED) {
 				op.finish(access.tick(), Operation.State.CANCELLED, null, null, null);
@@ -366,7 +467,7 @@ public final class OperationManager {
 		if (!op.isTerminal()) {
 			throw BridgeException.of("OPERATION_NOT_READY", "operation has not reached a terminal state", null);
 		}
-		if (op.isWrite()) {
+		if (!op.isRead()) {
 			throw BridgeException.of("OPERATION_KIND_MISMATCH", "operation is not a query", null);
 		}
 		if (op.state() != Operation.State.SUCCEEDED) {
@@ -391,6 +492,7 @@ public final class OperationManager {
 			return;
 		}
 		long tickStart = System.nanoTime();
+		lastTickNanos = tickStart;
 		int writes = 0;
 		int tickReadsBefore = 0;
 		for (Operation read : activeReads) {
@@ -411,8 +513,31 @@ public final class OperationManager {
 		}
 		long start = System.nanoTime();
 		long deadline = start + TICK_BUDGET_NANOS;
+		long preloadDeadline = start + TICK_BUDGET_NANOS / 4;
 		long readDeadline = start + TICK_BUDGET_NANOS / 2;
 		promote(tick);
+		Iterator<Operation> loadIterator = activeLoads.iterator();
+		while (loadIterator.hasNext()) {
+			Operation op = loadIterator.next();
+			if (op.cancelRequested) {
+				cancelPreload(op, tick);
+				loadIterator.remove();
+				continue;
+			}
+			if (op.state() == Operation.State.RUNNING) {
+				try {
+					if (processPreload(op, tick, preloadDeadline)) {
+						loadIterator.remove();
+					}
+				} catch (RuntimeException e) {
+					JsonObject details = new JsonObject();
+					details.addProperty("exception", e.getClass().getSimpleName());
+					failPreload(op, tick, "INTERNAL_ERROR",
+							"preload operation failed; tickets for acquired chunks are released", details);
+					loadIterator.remove();
+				}
+			}
+		}
 		Iterator<Operation> iterator = activeReads.iterator();
 		while (iterator.hasNext()) {
 			Operation op = iterator.next();
@@ -437,7 +562,14 @@ public final class OperationManager {
 			if (writing.cancelRequested) {
 				writing.finish(tick, Operation.State.CANCELLED, null, null, null);
 			} else {
-				processWrite(writing, tick, deadline);
+				try {
+					processWrite(writing, tick, deadline);
+				} catch (RuntimeException e) {
+					JsonObject details = new JsonObject();
+					details.addProperty("exception", e.getClass().getSimpleName());
+					failTask(writing, tick, "INTERNAL_ERROR",
+							"write operation failed; completed changes are not rolled back", details);
+				}
 			}
 			writes = writing.processed - processedBefore;
 			visuals.progress(writing.dimension, writing.id, writing.processed, writing.total, writing.state().json());
@@ -447,6 +579,7 @@ public final class OperationManager {
 			}
 		}
 		cleanupExpired();
+		prunePreloadTickets(tick);
 		long elapsed = System.nanoTime() - tickStart;
 		int reads = 0;
 		for (Operation read : activeReads) {
@@ -483,6 +616,15 @@ public final class OperationManager {
 			}
 			op.markStarted(tick);
 			activeReads.add(op);
+		}
+		while (activeLoads.size() < MAX_ACTIVE_PRELOADS && !pendingLoads.isEmpty()) {
+			Operation op = pendingLoads.removeFirst();
+			if (op.cancelRequested) {
+				op.finish(tick, Operation.State.CANCELLED, null, null, null);
+				continue;
+			}
+			op.markStarted(tick);
+			activeLoads.add(op);
 		}
 		if (activeWrite == null && !pendingWrites.isEmpty()) {
 			Operation op = pendingWrites.removeFirst();
@@ -633,11 +775,216 @@ public final class OperationManager {
 		return false;
 	}
 
+	private boolean processPreload(Operation op, int tick, long deadline) {
+		ServerLevel level = op.preloadLevel;
+		if (level == null) {
+			try {
+				level = access.level(op.dimension);
+			} catch (BridgeException e) {
+				failPreload(op, tick, e.code, e.getMessage(), e.details);
+				return true;
+			}
+			op.preloadLevel = level;
+		}
+		if (op.cancelRequested) {
+			cancelPreload(op, level, tick);
+			return true;
+		}
+		if (op.startedTick >= 0 && tick - op.startedTick >= PRELOAD_TICKET_TIMEOUT_TICKS) {
+			JsonObject details = new JsonObject();
+			details.addProperty("dimension", op.dimension);
+			details.addProperty("requested_chunks", op.total);
+			details.addProperty("loaded_chunks", op.succeeded);
+			details.addProperty("timeout_ticks", PRELOAD_TICKET_TIMEOUT_TICKS);
+			failPreload(op, level, tick, "CHUNK_LOAD_TIMEOUT",
+					"chunks did not finish loading before the preload timeout", details);
+			return true;
+		}
+		int spanX = (op.maxX >> 4) - (op.minX >> 4) + 1;
+		int total = op.total;
+		if (op.cursor < total) {
+			int work = 0;
+			while (op.cursor < total) {
+				if (op.cancelRequested) {
+					cancelPreload(op, level, tick);
+					return true;
+				}
+				if (work > 0 && (work >= PRELOAD_TICKETS_PER_TICK || System.nanoTime() >= deadline)) {
+					break;
+				}
+				int index = op.cursor;
+				int chunkX = (op.minX >> 4) + index % spanX;
+				int chunkZ = (op.minZ >> 4) + index / spanX;
+				long packed = ChunkPos.pack(chunkX, chunkZ);
+				PreloadTicketLeases leases = leasesFor(level);
+				if (!leases.acquire(packed, tick)) {
+					JsonObject details = new JsonObject();
+					details.addProperty("tracked_chunks", leases.size());
+					details.addProperty("limit", MAX_TRACKED_PRELOAD_CHUNKS);
+					failPreload(op, level, tick, "RESOURCE_EXHAUSTED",
+							"preload ticket capacity is exhausted", details);
+					return true;
+				}
+				try {
+					level.getChunkSource().addTicketWithRadius(PreloadTicket.TYPE,
+							new ChunkPos(chunkX, chunkZ), 0);
+				} catch (RuntimeException e) {
+					if (leases.release(packed, false)) {
+						removePreloadTicket(level, chunkX, chunkZ);
+					}
+					JsonObject details = new JsonObject();
+					details.addProperty("dimension", op.dimension);
+					details.addProperty("chunk_x", chunkX);
+					details.addProperty("chunk_z", chunkZ);
+					details.addProperty("exception", e.getClass().getSimpleName());
+					failPreload(op, level, tick, "INTERNAL_ERROR", "could not add a chunk ticket", details);
+					return true;
+				}
+				op.cursor++;
+				work++;
+			}
+			return false;
+		}
+		if (op.preloadCheckCursor == 0) {
+			op.preloadPassLoaded = 0;
+		}
+		int work = 0;
+		while (op.preloadCheckCursor < total) {
+			if (op.cancelRequested) {
+				cancelPreload(op, level, tick);
+				return true;
+			}
+			if (work > 0 && (work >= PRELOAD_CHECKS_PER_TICK || System.nanoTime() >= deadline)) {
+				break;
+			}
+			int index = op.preloadCheckCursor++;
+			int chunkX = (op.minX >> 4) + index % spanX;
+			int chunkZ = (op.minZ >> 4) + index / spanX;
+			if (level.getChunkSource().hasChunk(chunkX, chunkZ)
+					&& level.getChunkSource().getChunkNow(chunkX, chunkZ) != null) {
+				op.preloadPassLoaded++;
+			}
+			work++;
+		}
+		if (op.preloadCheckCursor >= total) {
+			op.processed = op.preloadPassLoaded;
+			op.succeeded = op.preloadPassLoaded;
+			if (op.preloadPassLoaded == total) {
+				releasePreloadTickets(op, level, true);
+				op.finish(tick, Operation.State.SUCCEEDED, null, null, null);
+				return true;
+			}
+			op.preloadCheckCursor = 0;
+		}
+		return false;
+	}
+
+	private PreloadTicketLeases leasesFor(ServerLevel level) {
+		return preloadLeases.computeIfAbsent(level, ignored -> new PreloadTicketLeases(
+				MAX_TRACKED_PRELOAD_CHUNKS, PRELOAD_TICKET_TIMEOUT_TICKS + 200));
+	}
+
+	private void releasePreloadTickets(Operation op, ServerLevel level, boolean retain) {
+		PreloadTicketLeases leases = preloadLeases.get(level);
+		if (leases == null) {
+			return;
+		}
+		int spanX = (op.maxX >> 4) - (op.minX >> 4) + 1;
+		int acquired = Math.min(op.cursor, op.total);
+		for (int index = 0; index < acquired; index++) {
+			int chunkX = (op.minX >> 4) + index % spanX;
+			int chunkZ = (op.minZ >> 4) + index / spanX;
+			if (leases.release(ChunkPos.pack(chunkX, chunkZ), retain)) {
+				removePreloadTicket(level, chunkX, chunkZ);
+			}
+		}
+		if (leases.isEmpty()) {
+			preloadLeases.remove(level);
+		}
+	}
+
+	private void cancelPreload(Operation op, ServerLevel level, int tick) {
+		if (level != null) {
+			releasePreloadTickets(op, level, false);
+		}
+		op.finish(tick, Operation.State.CANCELLED, null, null, null);
+	}
+
+	private void cancelPreload(Operation op, int tick) {
+		ServerLevel level = op.preloadLevel != null ? op.preloadLevel : preloadLevelFor(op);
+		if (level == null) {
+			try {
+				level = access.level(op.dimension);
+			} catch (BridgeException ignored) {
+			}
+		}
+		cancelPreload(op, level, tick);
+	}
+
+	private ServerLevel preloadLevelFor(Operation op) {
+		for (ServerLevel level : preloadLeases.keySet()) {
+			if (GameAccess.dimensionId(level).equals(op.dimension)) {
+				return level;
+			}
+		}
+		return null;
+	}
+
+	private void failPreload(Operation op, ServerLevel level, int tick, String code, String message,
+			JsonObject details) {
+		if (level != null) {
+			releasePreloadTickets(op, level, false);
+		}
+		failTask(op, tick, code, message, details);
+	}
+
+	private void failPreload(Operation op, int tick, String code, String message, JsonObject details) {
+		ServerLevel level = op.preloadLevel != null ? op.preloadLevel : preloadLevelFor(op);
+		if (level == null) {
+			try {
+				level = access.level(op.dimension);
+			} catch (BridgeException ignored) {
+			}
+		}
+		failPreload(op, level, tick, code, message, details);
+	}
+
+	private static void removePreloadTicket(ServerLevel level, int chunkX, int chunkZ) {
+		try {
+			level.getChunkSource().removeTicketWithRadius(PreloadTicket.TYPE,
+					new ChunkPos(chunkX, chunkZ), 0);
+		} catch (RuntimeException e) {
+			MinecraftMcpMod.LOGGER.warn("Could not remove a preload ticket at chunk {},{}", chunkX, chunkZ, e);
+		}
+	}
+
+	private void prunePreloadTickets(int tick) {
+		Iterator<Map.Entry<ServerLevel, PreloadTicketLeases>> iterator = preloadLeases.entrySet().iterator();
+		while (iterator.hasNext()) {
+			Map.Entry<ServerLevel, PreloadTicketLeases> entry = iterator.next();
+			for (long packed : entry.getValue().prune(tick)) {
+				removePreloadTicket(entry.getKey(), ChunkPos.getX(packed), ChunkPos.getZ(packed));
+			}
+			if (entry.getValue().isEmpty()) {
+				iterator.remove();
+			}
+		}
+	}
+
+	private void releaseAllPreloadTickets() {
+		for (Map.Entry<ServerLevel, PreloadTicketLeases> entry : preloadLeases.entrySet()) {
+			for (long packed : entry.getValue().drain()) {
+				removePreloadTicket(entry.getKey(), ChunkPos.getX(packed), ChunkPos.getZ(packed));
+			}
+		}
+		preloadLeases.clear();
+	}
+
 	private boolean prepareWrite(Operation op, int tick, long deadline) {
 		if (op.prepared) {
 			return true;
 		}
-		if (!op.tool.equals("batch_set_blocks")) {
+		if (!op.tool.equals("batch_set_blocks") && !op.tool.equals("validate_batch_states")) {
 			op.prepared = true;
 			return true;
 		}
@@ -687,6 +1034,10 @@ public final class OperationManager {
 		if (!op.prepared) {
 			return false;
 		}
+		if (op.tool.equals("validate_batch_states")) {
+			op.finish(tick, Operation.State.SUCCEEDED, null, null, null);
+			return true;
+		}
 		if (op.batchTargets != null) {
 			if (op.previewStartedTick < 0) {
 				visuals.preview(op.dimension, op.id, op.batchX, op.batchY, op.batchZ, op.batchTargets);
@@ -696,6 +1047,9 @@ public final class OperationManager {
 			if (tick - op.previewStartedTick < 20) {
 				return false;
 			}
+		}
+		if (op.tool.equals("undo_operation")) {
+			return processUndo(op, tick, deadline);
 		}
 		ServerLevel level;
 		try {
@@ -713,7 +1067,7 @@ public final class OperationManager {
 				op.finish(tick, Operation.State.CANCELLED, null, null, null);
 				return true;
 			}
-			if (work > 0 && (work >= WRITE_CANDIDATES_PER_TICK || System.nanoTime() >= deadline)) {
+			if (work > 0 && (work >= writeCandidatesPerTick || System.nanoTime() >= deadline)) {
 				break;
 			}
 			int index = op.cursor;
@@ -767,7 +1121,7 @@ public final class OperationManager {
 					finishWrite(op, tick, op.errorsOverflow ? "RESOURCE_EXHAUSTED" : "PRECONDITION_FAILED");
 					return true;
 				}
-				if (op.errorsOverflow) {
+				if (op.errorCapacityExhausted()) {
 					finishWrite(op, tick, "RESOURCE_EXHAUSTED");
 					return true;
 				}
@@ -782,38 +1136,162 @@ public final class OperationManager {
 				work++;
 				continue;
 			}
-			boolean changed;
-			try {
-				changed = level.setBlock(pos, target, Block.UPDATE_ALL);
-			} catch (RuntimeException e) {
-				JsonObject details = new JsonObject();
-				details.addProperty("exception", e.getClass().getSimpleName());
+			WriteResult result = applyWrite(op, level, pos, current, target);
+			op.cursor++;
+			work++;
+			if (result.after != null && !current.equals(result.after)) {
+				op.changed++;
+			}
+			if (result.failure != null) {
 				coordinateFailure(op, index, x, y, z, "WRITE_OUTCOME_UNKNOWN",
-						"engine threw while applying the update; side effects are unknown", details, true);
+						"engine write or post-write observation failed; effects may be unknown",
+						result.failure, true);
 				finishWrite(op, tick, op.errorsOverflow ? "RESOURCE_EXHAUSTED" : "WRITE_OUTCOME_UNKNOWN");
 				return true;
 			}
-			op.cursor++;
-			work++;
-			if (!changed) {
+			if (!result.accepted) {
 				coordinateFailure(op, index, x, y, z, "WRITE_REJECTED",
 						"engine rejected the block update", null, false);
-				if (!op.onErrorContinue) {
-					finishWrite(op, tick, op.errorsOverflow ? "RESOURCE_EXHAUSTED" : "WRITE_REJECTED");
-					return true;
-				}
-				if (op.errorsOverflow) {
-					finishWrite(op, tick, "RESOURCE_EXHAUSTED");
+				if (!op.onErrorContinue || op.errorCapacityExhausted()) {
+					finishWrite(op, tick, op.errorCapacityExhausted() ? "RESOURCE_EXHAUSTED" : "WRITE_REJECTED");
 					return true;
 				}
 				continue;
 			}
-			op.changed++;
+			if (current.equals(result.after)) op.unchanged++;
 			op.succeeded++;
 			op.processed++;
 			visuals.range(op.dimension, op.id + "-step", x, y, z, x, y, z, target.isAir() ? "remove" : "place", 12);
 			if (op.errorCapacityExhausted()) {
 				finishWrite(op, tick, "RESOURCE_EXHAUSTED");
+				return true;
+			}
+		}
+		if (op.cursor >= op.total) {
+			finishWrite(op, tick, null);
+			return true;
+		}
+		return false;
+	}
+
+	private record WriteResult(boolean accepted, BlockState after, JsonObject failure, boolean unsafe) {}
+
+	/** Captures the observed final state even when the engine throws or rejects the write. */
+	private WriteResult applyWrite(Operation op, ServerLevel level, BlockPos pos,
+			BlockState before, BlockState target) {
+		boolean unsafe = before.hasBlockEntity() || target.hasBlockEntity();
+		boolean accepted = false;
+		boolean attempted = false;
+		BlockState after = null;
+		JsonObject failure = null;
+		try {
+			unsafe = unsafe || level.getBlockEntity(pos) != null;
+			attempted = true;
+			accepted = level.setBlock(pos, target, Block.UPDATE_ALL);
+		} catch (RuntimeException e) {
+			failure = new JsonObject();
+			failure.addProperty("exception", e.getClass().getSimpleName());
+		}
+		if (attempted) {
+			try {
+				if (!access.chunkLoaded(level, pos.getX(), pos.getZ())) {
+					throw new IllegalStateException("target chunk unloaded after write");
+				}
+				after = level.getBlockState(pos);
+				unsafe = unsafe || after.hasBlockEntity() || level.getBlockEntity(pos) != null;
+			} catch (RuntimeException e) {
+				if (failure == null) {
+					failure = new JsonObject();
+					failure.addProperty("exception", e.getClass().getSimpleName());
+				}
+			}
+			boolean unknown = failure != null;
+			op.recordUndo(new Operation.UndoEntry(pos.getX(), pos.getY(), pos.getZ(),
+					before, after, unsafe || unknown, unknown));
+		}
+		return new WriteResult(accepted, after, failure, unsafe);
+	}
+
+	private boolean processUndo(Operation op, int tick, long deadline) {
+		if (op.cursor >= op.total) {
+			finishWrite(op, tick, null);
+			return true;
+		}
+		ServerLevel level;
+		try {
+			level = access.level(op.dimension);
+		} catch (BridgeException e) {
+			failTask(op, tick, e);
+			return true;
+		}
+		int index = op.cursor++;
+		Operation.UndoEntry entry = op.undoSource.undoJournal.get(op.total - 1 - index);
+		int x = entry.x(), y = entry.y(), z = entry.z();
+		String failure = null;
+		String message = null;
+		JsonObject details = null;
+		boolean unknown = false;
+		try {
+			access.requireInBounds(level, x, y, z);
+		} catch (BridgeException e) {
+			coordinateFailure(op, index, x, y, z, e.code, e.getMessage(), e.details, false);
+			finishWrite(op, tick, e.code);
+			return true;
+		}
+		if (entry.unsafeToRestore()) {
+			failure = "UNDO_UNSAFE";
+			message = "source write involved a block entity or has an unknown outcome";
+		} else if (!access.chunkLoaded(level, x, z)) {
+			failure = "CHUNK_NOT_LOADED";
+			message = "target chunk is not loaded";
+		} else {
+			BlockPos pos = new BlockPos(x, y, z);
+			BlockState current = level.getBlockState(pos);
+			if (!entry.matchesAfter(current)) {
+				failure = "PRECONDITION_FAILED";
+				message = "current block state does not match the recorded post-write state";
+				details = new JsonObject();
+				details.add("expected", GameAccess.stateJson(entry.after()));
+				details.add("actual", GameAccess.stateJson(current));
+			} else if (current.hasBlockEntity() || entry.before().hasBlockEntity()
+					|| level.getBlockEntity(pos) != null) {
+				failure = "UNDO_UNSAFE";
+				message = "block entity data cannot be restored";
+			} else if (current.equals(entry.before())) {
+				op.unchanged++;
+				op.succeeded++;
+				op.processed++;
+			} else {
+				WriteResult result = applyWrite(op, level, pos, current, entry.before());
+				if (result.after != null && !current.equals(result.after)) op.changed++;
+				if (result.failure != null) {
+					failure = "WRITE_OUTCOME_UNKNOWN";
+					message = "engine write or post-write observation failed; effects may be unknown";
+					details = result.failure;
+					unknown = true;
+				} else if (!result.accepted) {
+					failure = "WRITE_REJECTED";
+					message = "engine rejected the block update";
+				} else if (result.unsafe) {
+					failure = "UNDO_UNSAFE";
+					message = "the restore produced block entity data that cannot be rolled back";
+				} else if (!entry.before().equals(result.after)) {
+					failure = "UNDO_RESULT_MISMATCH";
+					message = "world update did not leave the requested restored block state";
+					details = new JsonObject();
+					details.add("expected", GameAccess.stateJson(entry.before()));
+					details.add("actual", GameAccess.stateJson(result.after));
+				} else {
+					if (current.equals(result.after)) op.unchanged++;
+					op.succeeded++;
+					op.processed++;
+				}
+			}
+		}
+		if (failure != null) {
+			coordinateFailure(op, index, x, y, z, failure, message, details, unknown);
+			if (!op.onErrorContinue || op.errorCapacityExhausted() || unknown || failure.equals("CHUNK_NOT_LOADED")) {
+				finishWrite(op, tick, op.errorCapacityExhausted() ? "RESOURCE_EXHAUSTED" : failure);
 				return true;
 			}
 		}
@@ -863,7 +1341,8 @@ public final class OperationManager {
 		Iterator<Map.Entry<String, Operation>> iterator = operations.entrySet().iterator();
 		while (iterator.hasNext()) {
 			Operation op = iterator.next().getValue();
-			if (op.isTerminal() && op.terminalExpiresAtMillis() < now) {
+			if (op.isTerminal() && op.terminalExpiresAtMillis() < now && !isUndoSourceInUse(op)) {
+				reservedUndoEntries -= op.reservedUndoEntries;
 				iterator.remove();
 				IdempotencyRecord record = idempotency.get(op.requestId);
 				if (record != null && record.operationId.equals(op.id)) {
@@ -873,8 +1352,19 @@ public final class OperationManager {
 		}
 	}
 
+	private boolean isUndoSourceInUse(Operation source) {
+		if (activeWrite != null && !activeWrite.isTerminal() && activeWrite.undoSource == source) {
+			return true;
+		}
+		for (Operation pending : pendingWrites) {
+			if (pending.undoSource == source) return true;
+		}
+		return false;
+	}
+
 	public void shutdown() {
 		shuttingDown = true;
+		releaseAllPreloadTickets();
 		visuals.shutdown();
 		int tick = access.tick();
 		for (Operation op : pendingReads) {
@@ -886,16 +1376,25 @@ public final class OperationManager {
 		for (Operation op : activeReads) {
 			op.finish(tick, Operation.State.FAILED, "WORLD_SESSION_ENDED", "world session ended", null);
 		}
+		for (Operation op : pendingLoads) {
+			op.finish(tick, Operation.State.FAILED, "WORLD_SESSION_ENDED", "world session ended", null);
+		}
+		for (Operation op : activeLoads) {
+			op.finish(tick, Operation.State.FAILED, "WORLD_SESSION_ENDED", "world session ended", null);
+		}
 		if (activeWrite != null) {
 			activeWrite.finish(tick, Operation.State.FAILED, "WORLD_SESSION_ENDED", "world session ended", null);
 		}
 		pendingReads.clear();
 		pendingWrites.clear();
 		activeReads.clear();
+		pendingLoads.clear();
+		activeLoads.clear();
 		activeWrite = null;
 		immediate.clear();
 		operations.clear();
 		idempotency.clear();
+		reservedUndoEntries = 0;
 	}
 
 	private void requireSession(JsonObject args) throws BridgeException {
@@ -958,7 +1457,12 @@ public final class OperationManager {
 					copy.addProperty("on_error", "stop");
 				}
 			}
-			case "batch_set_blocks" -> {
+			case "undo_operation" -> {
+				if (!copy.has("on_error")) {
+					copy.addProperty("on_error", "stop");
+				}
+			}
+			case "batch_set_blocks", "validate_batch_states" -> {
 				if (copy.has("blocks") && copy.get("blocks").isJsonArray()) {
 					for (JsonElement element : copy.getAsJsonArray("blocks")) {
 						if (element.isJsonObject()) {
@@ -1022,6 +1526,31 @@ public final class OperationManager {
 				volume, false, min[0], min[1], min[2], max[0], max[1], max[2], clearance, "auto");
 	}
 
+	private Operation createPreload(JsonObject args, String requestId) throws BridgeException {
+		Json.only(args, Set.of("world_session_id", "dimension", "min", "max", "request_id"), "arguments");
+		String dimension = Json.string(args, "dimension", true, null);
+		int[] min = Json.position(args, "min", true);
+		int[] max = Json.position(args, "max", true);
+		if (min[0] > max[0] || min[1] > max[1] || min[2] > max[2]) {
+			throw BridgeException.invalid("min must not be greater than max on any axis");
+		}
+		long chunks = ((long) (max[0] >> 4) - (min[0] >> 4) + 1)
+				* ((long) (max[2] >> 4) - (min[2] >> 4) + 1);
+		if (chunks > MAX_PRELOAD_CHUNKS) {
+			JsonObject details = new JsonObject();
+			details.addProperty("chunks", chunks);
+			details.addProperty("limit", MAX_PRELOAD_CHUNKS);
+			throw BridgeException.of("LIMIT_EXCEEDED", "requested box touches too many chunks", details);
+		}
+		ServerLevel level = access.level(dimension);
+		access.requireInBounds(level, min[0], min[1], min[2]);
+		access.requireInBounds(level, max[0], max[1], max[2]);
+		Operation op = new Operation(newId(), requestId, "preload_chunks", "load", dimension, sessionId,
+				(int) chunks, false, min[0], min[1], min[2], max[0], max[1], max[2], 0, "auto");
+		op.preloadLevel = level;
+		return op;
+	}
+
 	private Operation createSet(JsonObject args, String requestId, boolean remove) throws BridgeException {
 		Set<String> fields = remove
 				? Set.of("world_session_id", "dimension", "pos", "expected_state", "on_error", "request_id")
@@ -1082,14 +1611,15 @@ public final class OperationManager {
 		return op;
 	}
 
-	private Operation createBatch(JsonObject args, String requestId) throws BridgeException {
+	private Operation createBatch(String tool, JsonObject args, String requestId) throws BridgeException {
 		Json.only(args, Set.of("world_session_id", "dimension", "blocks", "on_error", "request_id"),
 				"arguments");
 		String dimension = Json.string(args, "dimension", true, null);
 		boolean onErrorContinue = parseOnError(args);
 		List<JsonObject> blocks = Json.objectArray(args, "blocks");
-		if (blocks.isEmpty() || blocks.size() > MAX_BATCH_ENTRIES) {
-			throw BridgeException.invalid("blocks must contain between 1 and " + MAX_BATCH_ENTRIES + " entries");
+		int limit = tool.equals("validate_batch_states") ? 128 : MAX_BATCH_ENTRIES;
+		if (blocks.isEmpty() || blocks.size() > limit) {
+			throw BridgeException.invalid("blocks must contain between 1 and " + limit + " entries");
 		}
 		ServerLevel level = access.level(dimension);
 		int n = blocks.size();
@@ -1126,7 +1656,7 @@ public final class OperationManager {
 			}
 			normalizedBlocks.add(item);
 		}
-		Operation op = new Operation(newId(), requestId, "batch_set_blocks", "write", dimension, sessionId,
+		Operation op = new Operation(newId(), requestId, tool, "write", dimension, sessionId,
 				n, onErrorContinue, xs[0], ys[0], zs[0], xs[0], ys[0], zs[0], 0, "auto");
 		op.batchX = xs;
 		op.batchY = ys;
@@ -1134,6 +1664,30 @@ public final class OperationManager {
 		op.batchBlocks = normalizedBlocks;
 		op.batchTargets = new BlockState[n];
 		op.batchExpected = new BlockState[n];
+		return op;
+	}
+
+	private Operation createUndo(JsonObject args, String requestId) throws BridgeException {
+		Json.only(args, Set.of("world_session_id", "dimension", "operation_id", "on_error", "request_id"),
+				"arguments");
+		String dimension = Json.string(args, "dimension", true, null);
+		boolean onErrorContinue = parseOnError(args);
+		Operation source = requireOperation(args);
+		if (!source.isWrite()) {
+			throw BridgeException.of("OPERATION_KIND_MISMATCH", "source operation is not a write", null);
+		}
+		if (!source.isTerminal()) {
+			throw BridgeException.of("OPERATION_NOT_READY", "source operation is not terminal", null);
+		}
+		if (!source.dimension.equals(dimension)) {
+			throw BridgeException.invalid("dimension must match the source operation");
+		}
+		access.level(dimension);
+		Operation op = new Operation(newId(), requestId, "undo_operation", "write", dimension, sessionId,
+				source.undoJournal.size(), onErrorContinue, source.minX, source.minY, source.minZ,
+				source.maxX, source.maxY, source.maxZ, 0, "auto");
+		op.undoSource = source;
+		op.undoSourceId = source.id;
 		return op;
 	}
 
@@ -1194,18 +1748,22 @@ public final class OperationManager {
 		return "op-" + Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
 	}
 
-	private static JsonObject limitsJson() {
+	private JsonObject limitsJson() {
 		JsonObject limits = new JsonObject();
 		limits.addProperty("query_voxels", MAX_QUERY_VOXELS);
 		limits.addProperty("write_voxels", MAX_WRITE_VOXELS);
 		limits.addProperty("batch_entries", MAX_BATCH_ENTRIES);
+		limits.addProperty("undo_journal_entries", MAX_UNDO_JOURNAL_ENTRIES);
 		limits.addProperty("chunks_per_operation", MAX_CHUNKS);
+		limits.addProperty("preload_chunks_per_operation", MAX_PRELOAD_CHUNKS);
+		limits.addProperty("preload_ticket_timeout_ticks", PRELOAD_TICKET_TIMEOUT_TICKS);
+		limits.addProperty("preload_tracked_chunks", MAX_TRACKED_PRELOAD_CHUNKS);
 		limits.addProperty("queued_operations", MAX_QUEUED);
 		limits.addProperty("request_bytes", 2 * 1024 * 1024);
 		limits.addProperty("page_bytes", RegionSnapshot.MAX_PAGE_BYTES);
 		limits.addProperty("terminal_ttl_seconds", 300);
 		limits.addProperty("tick_budget_ms", 2);
-		limits.addProperty("write_candidates_per_tick", WRITE_CANDIDATES_PER_TICK);
+		limits.addProperty("write_candidates_per_tick", writeCandidatesPerTick);
 		return limits;
 	}
 
@@ -1213,14 +1771,19 @@ public final class OperationManager {
 	}
 
 	private static final Set<String> SUPPORTED_TOOLS = Set.of(
-			"get_world_info", "get_player_position", "get_block", "get_region", "get_terrain",
-			"set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks",
-			"get_operation", "cancel_operation", "get_operation_errors", "get_query_result");
+			"get_world_info", "get_player_position", "get_entity", "get_block", "get_biome", "get_light", "get_region", "get_terrain",
+			"preload_chunks",
+			"set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks", "undo_operation",
+			"get_operation", "get_operation_by_request_id", "cancel_operation", "get_operation_errors", "get_query_result",
+			"request_screenshot", "get_screenshot_status", "get_screenshot", "cancel_screenshot");
 
 	private static final Set<String> ASYNC_TOOLS = Set.of(
-			"get_region", "get_terrain", "set_block", "remove_block", "fill_region",
-			"replace_blocks", "batch_set_blocks");
+			"get_region", "get_terrain", "preload_chunks", "set_block", "remove_block", "fill_region",
+			"replace_blocks", "batch_set_blocks", "validate_batch_states", "undo_operation");
 
+	// Preload can generate and persist chunks, so read-only bridges reject it even though its
+	// operation kind is "load" rather than "write".
 	private static final Set<String> WRITE_TOOLS = Set.of(
-			"set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks");
+			"set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks", "validate_batch_states", "undo_operation",
+			"preload_chunks");
 }

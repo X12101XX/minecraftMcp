@@ -32,12 +32,12 @@ public final class BridgeException extends Exception {
 					"OPERATION_NOT_READY", "OPERATION_KIND_MISMATCH", "RESULT_UNAVAILABLE" -> 409;
 			case "REQUEST_TOO_LARGE", "LIMIT_EXCEEDED" -> 413;
 			case "QUEUE_FULL", "RESOURCE_EXHAUSTED" -> 429;
-			case "WORLD_NOT_READY", "SERVER_TICK_TIMEOUT" -> 503;
+			case "WORLD_NOT_READY", "SERVER_TICK_TIMEOUT", "LIGHT_NOT_READY" -> 503;
 			default -> 400;
 		};
 		boolean retryable = code.equals("QUEUE_FULL") || code.equals("RESOURCE_EXHAUSTED")
 				|| code.equals("WORLD_NOT_READY") || code.equals("SERVER_TICK_TIMEOUT")
-				|| code.equals("OPERATION_NOT_READY");
+				|| code.equals("OPERATION_NOT_READY") || code.equals("LIGHT_NOT_READY");
 		return new BridgeException(code, status, message, retryable, details);
 	}
 

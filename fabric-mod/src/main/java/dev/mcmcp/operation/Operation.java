@@ -7,6 +7,7 @@ import dev.mcmcp.bridge.Json;
 import dev.mcmcp.query.BlockStateKey;
 import dev.mcmcp.query.RegionSnapshot;
 import dev.mcmcp.query.TerrainSnapshot;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -66,12 +67,44 @@ public final class Operation {
 	public boolean prepared;
 	public int previewStartedTick = -1;
 
+	// One entry per attempted direct world write; capacity is reserved at acceptance.
+	public record UndoEntry(int x, int y, int z, BlockState before, BlockState after,
+			boolean unsafe, boolean outcomeUnknown) {
+		public boolean unsafeToRestore() {
+			return unsafe || outcomeUnknown || before == null || after == null
+					|| before.hasBlockEntity() || after.hasBlockEntity();
+		}
+
+		public boolean matchesAfter(BlockState current) {
+			return after != null && after.equals(current);
+		}
+	}
+	public final List<UndoEntry> undoJournal = new ArrayList<>();
+	public Operation undoSource;
+	public String undoSourceId;
+	public int unsafeUndoEntries;
+	public int unknownUndoEntries;
+	public int reservedUndoEntries;
+
+	public void recordUndo(UndoEntry entry) {
+		synchronized (lock) {
+			undoJournal.add(entry);
+			if (entry.unsafe()) unsafeUndoEntries++;
+			if (entry.outcomeUnknown()) unknownUndoEntries++;
+		}
+	}
+
 	// Scan/execution cursor
 	public int cursor;
 	public List<BlockStateKey> palette;
 	public Map<BlockStateKey, Integer> paletteIndex;
 	public int[] indices;
 	public dev.mcmcp.query.TerrainFact[] terrainFacts;
+
+	// Chunk preload plan: one entry per chunk in x-fastest, then z order.
+	public ServerLevel preloadLevel;
+	public int preloadCheckCursor;
+	public int preloadPassLoaded;
 
 	public State state = State.QUEUED;
 	public boolean cancelRequested;
@@ -122,6 +155,10 @@ public final class Operation {
 		return "read".equals(kind);
 	}
 
+	public boolean isLoad() {
+		return "load".equals(kind);
+	}
+
 	public boolean isTerminal() {
 		synchronized (lock) {
 			return state.terminal();
@@ -167,6 +204,8 @@ public final class Operation {
 				return;
 			}
 			state = result;
+			undoSource = null;
+			preloadLevel = null;
 			finishedTick = tick;
 			finishedAt = System.currentTimeMillis();
 			if (result == State.FAILED) {
@@ -222,6 +261,14 @@ public final class Operation {
 			counts.addProperty("skipped", skipped);
 			counts.addProperty("failed", failed);
 			op.add("counts", counts);
+			if (isWrite()) {
+				JsonObject undo = new JsonObject();
+				undo.addProperty("source_operation_id", undoSourceId);
+				undo.addProperty("recorded", undoJournal.size());
+				undo.addProperty("unsafe", unsafeUndoEntries);
+				undo.addProperty("outcome_unknown", unknownUndoEntries);
+				op.add("undo_log", undo);
+			}
 			op.addProperty("error_count", errors.size());
 			op.addProperty("created_at", Instant.ofEpochMilli(createdAt).toString());
 			op.addProperty("started_tick", startedTick < 0 ? null : startedTick);

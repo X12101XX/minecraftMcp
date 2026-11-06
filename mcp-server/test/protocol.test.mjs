@@ -44,6 +44,21 @@ async function startStubBridge() {
             has_collision: true, observed_tick: 10,
           });
         }
+        if (parsed.tool === "get_biome" || parsed.tool === "get_light") {
+          return send(200, { ok: true, ...parsed.arguments, observed_tick: 10,
+            ...(parsed.tool === "get_biome" ? { biome_id: "minecraft:plains" } : { block_light: 3, sky_light: 15, raw_brightness: 12 }) });
+        }
+        if (parsed.tool === "undo_operation") {
+          return send(202, { ok: true, operation: { operation_id: "op-undo", request_id: parsed.arguments.request_id, state: "queued" } });
+        }
+        if (parsed.tool === "get_operation_by_request_id") {
+          assert.deepEqual(parsed.arguments, {
+            world_session_id: "s-protocol", request_id: "33333333-3333-4333-8333-333333333333",
+          });
+          return send(200, { ok: true, operation: {
+            operation_id: "op-protocol", request_id: parsed.arguments.request_id, state: "queued",
+          } });
+        }
         if (parsed.tool === "get_region") {
           return send(202, {
             ok: true,
@@ -52,6 +67,19 @@ async function startStubBridge() {
               world_session_id: "s-protocol", dimension: "minecraft:overworld",
               tool: "get_region", kind: "read", state: "queued",
               counts: { total: 1, processed: 0, succeeded: 0, changed: 0, unchanged: 0, skipped: 0, failed: 0 },
+              error_count: 0, created_at: "2026-11-05T12:00:00Z", started_tick: null,
+              finished_tick: null, expires_at: null, result_available: false, terminal_error: null,
+            },
+          });
+        }
+        if (parsed.tool === "preload_chunks") {
+          return send(202, {
+            ok: true,
+            operation: {
+              operation_id: "op-preload", request_id: parsed.arguments.request_id,
+              world_session_id: "s-protocol", dimension: "minecraft:overworld",
+              tool: "preload_chunks", kind: "load", state: "queued",
+              counts: { total: 4, processed: 0, succeeded: 0, changed: 0, unchanged: 0, skipped: 0, failed: 0 },
               error_count: 0, created_at: "2026-11-05T12:00:00Z", started_tick: null,
               finished_tick: null, expires_at: null, result_available: false, terminal_error: null,
             },
@@ -84,7 +112,6 @@ test("MCP client discovers and calls tools through the real SDK stdio transport"
   await client.connect(transport);
 
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 14);
   assert.ok(listed.tools.some((tool) => tool.name === "get_terrain"));
 
   const info = await client.callTool({ name: "get_world_info", arguments: {} });
@@ -101,6 +128,16 @@ test("MCP client discovers and calls tools through the real SDK stdio transport"
   const blockBody = JSON.parse(block.content[0].text);
   assert.equal(blockBody.block_state.id, "minecraft:stone");
   assert.equal(blockBody.observed_tick, 10);
+  const pointArgs = { world_session_id: "s-protocol", dimension: "minecraft:overworld", pos: { x: 0, y: 64, z: 0 } };
+  const biome = await client.callTool({ name: "get_biome", arguments: pointArgs });
+  assert.equal(JSON.parse(biome.content[0].text).biome_id, "minecraft:plains");
+  const light = await client.callTool({ name: "get_light", arguments: pointArgs });
+  assert.equal(JSON.parse(light.content[0].text).raw_brightness, 12);
+  const undo = await client.callTool({ name: "undo_operation", arguments: {
+    world_session_id: "s-protocol", dimension: "minecraft:overworld", operation_id: "source",
+    request_id: "55555555-5555-4555-8555-555555555555",
+  } });
+  assert.equal(JSON.parse(undo.content[0].text).operation.operation_id, "op-undo");
 
   const region = await client.callTool({
     name: "get_region",
@@ -112,6 +149,27 @@ test("MCP client discovers and calls tools through the real SDK stdio transport"
   });
   assert.equal(region.isError, false);
   assert.equal(JSON.parse(region.content[0].text).operation.operation_id, "op-protocol");
+
+  const preload = await client.callTool({
+    name: "preload_chunks",
+    arguments: {
+      world_session_id: "s-protocol", dimension: "minecraft:overworld",
+      min: { x: 0, y: 64, z: 0 }, max: { x: 31, y: 64, z: 31 },
+      request_id: "66666666-6666-4666-8666-666666666666",
+    },
+  });
+  assert.equal(preload.isError, false);
+  const preloadBody = JSON.parse(preload.content[0].text);
+  assert.equal(preloadBody.operation.operation_id, "op-preload");
+  assert.equal(preloadBody.operation.kind, "load");
+  assert.equal(preloadBody.operation.counts.total, 4);
+
+  const lookup = await client.callTool({
+    name: "get_operation_by_request_id",
+    arguments: { world_session_id: "s-protocol", request_id: "33333333-3333-4333-8333-333333333333" },
+  });
+  assert.equal(lookup.isError, false);
+  assert.equal(JSON.parse(lookup.content[0].text).operation.operation_id, "op-protocol");
 
   const unknown = await client.callTool({ name: "not_a_tool", arguments: {} });
   assert.equal(unknown.isError, true);

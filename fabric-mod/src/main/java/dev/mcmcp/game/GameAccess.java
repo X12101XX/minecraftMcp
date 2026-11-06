@@ -7,11 +7,16 @@ import dev.mcmcp.bridge.Json;
 import dev.mcmcp.query.BlockStateKey;
 import dev.mcmcp.query.TerrainFact;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.QuartPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Blocks;
@@ -344,6 +349,40 @@ public final class GameAccess {
 			details.addProperty("z", z);
 			throw BridgeException.of("OUT_OF_BOUNDS", "block coordinate is outside the world", details);
 		}
+	}
+
+	/** Returns the stored 4x4x4 biome cell, without sampling neighbouring chunks. */
+	public JsonObject biomeFacts(ServerLevel level, BlockPos pos) throws BridgeException {
+		LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+		if (chunk == null) {
+			requireChunk(level, pos.getX(), pos.getY(), pos.getZ());
+			throw BridgeException.of("CHUNK_NOT_LOADED", "target chunk is not loaded", null);
+		}
+		var biome = chunk.getNoiseBiome(QuartPos.fromBlock(pos.getX()), QuartPos.fromBlock(pos.getY()),
+				QuartPos.fromBlock(pos.getZ()));
+		var key = biome.unwrapKey().orElseThrow(() ->
+				BridgeException.of("BIOME_UNREGISTERED", "stored biome has no registry identifier", null));
+		JsonObject facts = new JsonObject();
+		facts.addProperty("biome_id", key.identifier().toString());
+		return facts;
+	}
+
+	/** Reads the current light-engine snapshot; pending propagation may change it later. */
+	public JsonObject lightFacts(ServerLevel level, BlockPos pos) throws BridgeException {
+		LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+		if (chunk == null) {
+			requireChunk(level, pos.getX(), pos.getY(), pos.getZ());
+			throw BridgeException.of("CHUNK_NOT_LOADED", "target chunk is not loaded", null);
+		}
+		LevelLightEngine engine = level.getLightEngine();
+		if (!chunk.isLightCorrect() || !engine.lightOnInColumn(SectionPos.asLong(pos.getX() >> 4, 0, pos.getZ() >> 4))) {
+			throw BridgeException.of("LIGHT_NOT_READY", "light data is not initialized for the target chunk", null);
+		}
+		JsonObject facts = new JsonObject();
+		facts.addProperty("block_light", engine.getLayerListener(LightLayer.BLOCK).getLightValue(pos));
+		facts.addProperty("sky_light", engine.getLayerListener(LightLayer.SKY).getLightValue(pos));
+		facts.addProperty("raw_brightness", engine.getRawBrightness(pos, level.getSkyDarken()));
+		return facts;
 	}
 
 	public JsonObject blockFacts(ServerLevel level, BlockPos pos) {

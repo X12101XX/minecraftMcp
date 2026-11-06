@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import dev.mcmcp.MinecraftMcpMod;
 import dev.mcmcp.config.BridgeConfig;
 import dev.mcmcp.operation.OperationManager;
+import dev.mcmcp.screenshot.ScreenshotCoordinator;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,6 +21,10 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.Base64;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +43,7 @@ public final class BridgeServer {
 
 	private final BridgeConfig config;
 	private final OperationManager operations;
+	private final ScreenshotCoordinator screenshots;
 	private final byte[] tokenBytes;
 	private HttpServer server;
 	private ExecutorService executor;
@@ -45,9 +51,10 @@ public final class BridgeServer {
 	private long rateWindow = System.nanoTime();
 	private int rateCount;
 
-	public BridgeServer(BridgeConfig config, OperationManager operations) {
+	public BridgeServer(BridgeConfig config, OperationManager operations, ScreenshotCoordinator screenshots) {
 		this.config = config;
 		this.operations = operations;
+		this.screenshots = screenshots;
 		this.tokenBytes = config.token.getBytes(StandardCharsets.UTF_8);
 	}
 
@@ -146,10 +153,16 @@ public final class BridgeServer {
 			JsonObject result;
 			switch (tool) {
 				case "get_block" -> result = await(() -> operations.getBlock(args));
+				case "get_entity" -> result = await(() -> operations.getEntity(args));
+				case "get_biome", "get_light" -> result = await(() -> operations.getBiomeOrLight(tool, args));
 				case "get_player_position" -> result = await(() -> operations.playerPosition(args));
+				case "preload_chunks" -> result = await(() -> operations.acceptAsync(tool, args));
+				case "request_screenshot", "get_screenshot_status", "get_screenshot", "cancel_screenshot" ->
+						result = capture(tool, args);
+				case "get_operation_by_request_id" -> result = operations.getOperationByRequestId(args);
 				default -> result = await(() -> operations.acceptAsync(tool, args));
 			}
-			respond(exchange, result.has("operation") ? 202 : 200, result);
+			respond(exchange, result.has("operation") && !tool.equals("get_operation_by_request_id") ? 202 : 200, result);
 			return;
 		}
 		if (path.startsWith("/v1/operations/")) {
@@ -210,14 +223,63 @@ public final class BridgeServer {
 		throw notFound();
 	}
 
+	private JsonObject capture(String tool, JsonObject args) throws BridgeException {
+		boolean start = tool.equals("request_screenshot");
+		Json.only(args, start ? Set.of("world_session_id", "player_uuid", "request_id")
+				: Set.of("world_session_id", "capture_id"), "arguments");
+		String session = Json.string(args, "world_session_id", true, null);
+		if (!operations.sessionId().equals(session)) {
+			throw BridgeException.of("WORLD_SESSION_MISMATCH", "world session has changed", null);
+		}
+		String player = start ? Json.string(args, "player_uuid", true, null) : null;
+		String request = start ? Json.string(args, "request_id", true, null) : null;
+		String id = start ? null : Json.string(args, "capture_id", true, null);
+		AtomicReference<byte[]> image = new AtomicReference<>();
+		JsonObject result = await(() -> {
+			try {
+				JsonObject response = new JsonObject();
+				response.addProperty("ok", true);
+				response.addProperty("world_session_id", session);
+				if (start) {
+					UUID uuid = UUID.fromString(player);
+					if (!uuid.toString().equals(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
+					response.addProperty("capture_id", screenshots.start(session, uuid, request));
+				} else {
+					if (tool.equals("cancel_screenshot")) screenshots.cancel(session, id);
+					ScreenshotCoordinator.Status status = screenshots.status(session, id);
+					response.addProperty("capture_id", id);
+					response.addProperty("player_uuid", status.player().toString());
+					response.addProperty("state", status.state().name().toLowerCase(java.util.Locale.ROOT));
+					response.addProperty("error", status.error());
+					response.addProperty("bytes", status.bytes());
+					if (tool.equals("get_screenshot")) image.set(screenshots.takeResult(session, id));
+				}
+				return response;
+			} catch (IllegalArgumentException | IllegalStateException e) {
+				String code = e.getMessage();
+				if (code == null || !code.matches("[A-Z_]+")) code = "INVALID_ARGUMENT";
+				throw BridgeException.of(code, "screenshot request failed: " + code, null);
+			}
+		});
+		if (image.get() != null) result.addProperty("image_base64", Base64.getEncoder().encodeToString(image.get()));
+		return result;
+	}
+
 	private JsonObject await(OperationManager.ServerCall call) throws BridgeException {
+		CompletableFuture<JsonObject> future = operations.callOnServer(call);
+		long tickAge = operations.tickAgeMillis();
+		long timeoutSeconds = tickAge >= 1000 ? 2 : REQUEST_TIMEOUT_SECONDS;
 		try {
-			return operations.callOnServer(call).get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			return future.get(timeoutSeconds, TimeUnit.SECONDS);
 		} catch (TimeoutException e) {
 			JsonObject details = new JsonObject();
-			details.addProperty("accepted_unknown", true);
+			details.addProperty("accepted", true);
+			details.addProperty("queued", true);
+			details.addProperty("server_tick_age_ms", tickAge);
+			details.addProperty("tick_stalled", tickAge >= 1000);
+			details.addProperty("retry_hint", "poll with the original request_id after ticks resume; do not resubmit as a new action");
 			throw new BridgeException("SERVER_TICK_TIMEOUT", 503,
-					"server tick did not process the request in time; the request may still be accepted",
+					"server tick did not process the queued request in time; it remains accepted and may complete after ticks resume",
 					true, details);
 		} catch (java.util.concurrent.ExecutionException e) {
 			if (e.getCause() instanceof BridgeException bridge) {

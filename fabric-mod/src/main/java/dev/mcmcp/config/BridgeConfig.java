@@ -20,16 +20,20 @@ import java.util.Set;
  */
 public final class BridgeConfig {
 	public static final int DEFAULT_PORT = 8765;
+	public static final int DEFAULT_WRITE_CANDIDATES_PER_TICK = 256;
 	private static final int MAX_PORT = 65535;
+	private static final int MAX_WRITE_CANDIDATES_PER_TICK = 1024;
 
 	public final int port;
 	public final boolean allowWrites;
+	public final int writeCandidatesPerTick;
 	public final String token;
 	public final Path credentialsPath;
 
-	private BridgeConfig(int port, boolean allowWrites, String token, Path credentialsPath) {
+	private BridgeConfig(int port, boolean allowWrites, int writeCandidatesPerTick, String token, Path credentialsPath) {
 		this.port = port;
 		this.allowWrites = allowWrites;
+		this.writeCandidatesPerTick = writeCandidatesPerTick;
 		this.token = token;
 		this.credentialsPath = credentialsPath;
 	}
@@ -44,6 +48,7 @@ public final class BridgeConfig {
 		Path settingsPath = configDir.resolve("minecraft-mcp.json");
 		int port = DEFAULT_PORT;
 		boolean allowWrites = true;
+		int writeCandidatesPerTick = DEFAULT_WRITE_CANDIDATES_PER_TICK;
 		if (Files.isRegularFile(settingsPath)) {
 			try {
 				JsonObject settings = JsonParser.parseString(Files.readString(settingsPath, StandardCharsets.UTF_8))
@@ -59,6 +64,15 @@ public final class BridgeConfig {
 				if (settings.has("allow_writes")) {
 					allowWrites = settings.get("allow_writes").getAsBoolean();
 				}
+				if (settings.has("write_candidates_per_tick")) {
+					int candidate = settings.get("write_candidates_per_tick").getAsInt();
+					if (candidate >= 1 && candidate <= MAX_WRITE_CANDIDATES_PER_TICK) {
+						writeCandidatesPerTick = candidate;
+					} else {
+						MinecraftMcpMod.LOGGER.warn("Invalid minecraft-mcp.json write_candidates_per_tick; using {}",
+								DEFAULT_WRITE_CANDIDATES_PER_TICK);
+					}
+				}
 			} catch (RuntimeException e) {
 				MinecraftMcpMod.LOGGER.warn("Could not parse {}; using defaults", settingsPath, e);
 			}
@@ -66,6 +80,7 @@ public final class BridgeConfig {
 			JsonObject settings = new JsonObject();
 			settings.addProperty("port", DEFAULT_PORT);
 			settings.addProperty("allow_writes", true);
+			settings.addProperty("write_candidates_per_tick", DEFAULT_WRITE_CANDIDATES_PER_TICK);
 			Files.writeString(settingsPath, dev.mcmcp.bridge.Json.GSON.toJson(settings) + System.lineSeparator(),
 					StandardCharsets.UTF_8);
 		}
@@ -103,6 +118,6 @@ public final class BridgeConfig {
 		} catch (UnsupportedOperationException ignored) {
 			// Windows: the per-user profile directory is the practical boundary. README documents it.
 		}
-		return new BridgeConfig(port, allowWrites, token, credentialsPath);
+		return new BridgeConfig(port, allowWrites, writeCandidatesPerTick, token, credentialsPath);
 	}
 }

@@ -7,7 +7,7 @@
 - Fabric Mod、MCP Server、构建与集成验证均已完成。
 - 已验证 Minecraft **26.3** + Fabric Loader **0.20.1** + Fabric API **0.165.2+26.3** + Loom **1.19.3**。
 - 真实玩家、地形读取、两层房屋搭建、区域重读、缺陷检测与修复、保存重启、取消及大规模写入已实测。
-- 建造过程可视化：查看范围短暂亮起、batch 目标半透明预览、所有写工具每 Tick 最多处理一个候选；观看特效需客户端也安装本 Mod 与 Fabric API。
+- 建造过程可视化：查看范围短暂亮起、batch 目标半透明预览；写速率默认每 Tick 最多 256 个候选，可在配置中调整；观看特效需客户端也安装本 Mod 与 Fabric API。
 - 完整的测试数据、边界和未覆盖项见 [验证报告](docs/verification-report.md)。
 
 ## 架构
@@ -37,7 +37,7 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 | `docs/tool-contracts.md` | 每个 MCP Tool 的完整参数、结果、错误、分页和内部协议 |
 | `docs/architecture.md` | 线程、调度、区块、压缩、安全与生命周期设计 |
 | `docs/verification-report.md` | 实际构建、测试、性能和未验证项 |
-| `docs/release-1.1.0.md` | 最新 GitHub Release 资产、升级和安装步骤 |
+| `docs/release-2.0.0.md` | 最新 GitHub Release 资产、升级和安装步骤 |
 | `integration/client/` | 本地集成测试客户端（运行时目录，不纳入版本） |
 | `skills/` | 开发 Skill 与运行时建造 Skill |
 
@@ -54,10 +54,10 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 ```bash
 cd fabric-mod
 ./gradlew build
-# 产物：build/libs/minecraft-mcp-1.1.0.jar
+# 产物：build/libs/minecraft-mcp-2.0.0.jar
 ```
 
-把 `minecraft-mcp-1.1.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。升级前移除旧版 Minecraft MCP JAR，避免重复 Mod ID。
+把 `minecraft-mcp-2.0.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。升级前移除旧版 Minecraft MCP JAR，避免重复 Mod ID。
 
 需要看到 Agent 的选区与待放方块时，**服务端和观看者客户端都安装同一构建的本 Mod + Fabric API**；无需其他前置 Mod。只装服务端仍可正常读取/逐块写入，但原版客户端没有自定义预览。单人世界安装一次即可。
 
@@ -73,7 +73,7 @@ cd fabric-mod
 
 预览不是世界方块，不参与碰撞、交互或保存，也不代表写入成功。普通方块保留原模型、材质和朝向；使用特殊渲染器、没有烘焙模型的目标以其实际形状显示半透明光体，空气目标显示红色删除框。取消/失败/完成、换世界、换维度和断连会清除待放模型；空间特效只发往同维度且支持该通道的客户端。
 
-固定写入节奏优先保证过程可见，而不是旧版本的批量吞吐。20 TPS 时最多约 20 个候选/秒，大区域可能运行数分钟乃至数小时；请轮询已有 operation，不要因耗时增加重复提交。
+写入速率可配置：`config/minecraft-mcp.json` 的 `write_candidates_per_tick` 默认 **256**，允许 1–1024，修改后需重开世界。每个 Tick 仍在约 2 ms 的共享预算内主动让出，因此实际速率受方块更新成本和调度负载限制；大区域仍应轮询已有 operation。降低该值可让逐块过程更清晰。
 
 实机证据：[9 秒建造过程录像](docs/media/build-process.mp4)；覆盖范围与未验证边界见[本次回归报告](docs/verification-report.md#8-建造过程可视化回归--2026-11-06)。
 
@@ -136,7 +136,7 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 }
 ```
 
-先启动 Minecraft/进入世界，再让客户端发现工具。客户端应能看到 14 个工具；`tools/list` 和 `tools/call` 均由官方 MCP SDK 处理，stdio 的 stdout 只用于协议消息，日志写入 stderr。
+先启动 Minecraft/进入世界，再让客户端发现工具。客户端应能看到 28 个工具；`tools/list` 和 `tools/call` 均由官方 MCP SDK 处理，stdio 的 stdout 只用于协议消息，日志写入 stderr。
 
 ## 快速使用
 
@@ -151,7 +151,13 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 
 所有写工具是异步的；“已提交”不代表“已修改”。失败或取消不会自动回滚，已经写入的方块保留。区域/地形查询是跨 Tick 的增量采样，不是同一瞬间的原子快照。
 
-无人值守测试 dedicated 服时，需把 `server.properties` 的 `pause-when-empty-seconds` 设为 `0`；否则无玩家时服务端可能暂停 Tick，异步任务会等待而不是完成。
+提交响应超时或丢失时，原生任务使用原 `world_session_id` 和 `request_id` 调用 `get_operation_by_request_id`；分片读写分别使用其专用的 `*_by_request_id` 工具。查不到可能是尚未接受、已经过期或会话结束，不能证明没有写入；先核对会话和实际世界，不要盲目重复提交。
+
+`undo_operation` 可按记录的写后 BlockState 条件恢复直接写入；它不能检测状态变更后又变回原样（ABA），也不能恢复方块实体、NBT 和间接世界副作用，不是事务回滚。
+
+截图指定在线且安装同版本 Mod 的玩家，**不会弹出授权提示**；持有 MCP 凭据的进程可以读取其当前游戏画面，包括聊天和 HUD。仅在已授权的环境中使用。截图为当前视角，非任意位置相机；限制 800 万像素及 4 MiB PNG，结果保留 60 秒。
+
+无人值守测试 dedicated 服时，需把 `server.properties` 的 `pause-when-empty-seconds` 设为 `0`；否则无玩家时服务端可能暂停 Tick，异步任务会等待而不是完成。单人游戏可用 F3+P 关闭失焦暂停；主动打开暂停菜单仍会停止集成服务端 Tick。超时后应查询原任务，而非新建重复任务。
 
 ## MCP Tools
 
@@ -161,15 +167,26 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 | --- | --- | --- |
 | `get_world_info` | 无 | 同步 bootstrap |
 | `get_player_position` | `world_session_id`, 可选 `player` | 同步 |
+| `get_entity` | `world_session_id`, `dimension`, `entity_uuid` | 按 UUID 查询当前可访问实体；不枚举区域 |
 | `get_block` | `world_session_id`, `dimension`, `pos` | 同步 |
+| `get_biome` / `get_light` | `world_session_id`, `dimension`, `pos` | 同步读取存储 biome 单元 / 光照快照 |
 | `get_region` | `world_session_id`, `dimension`, `min`, `max`, `encoding?`, `request_id` | 异步查询 |
-| `get_terrain` | 同上 + `clearance_height?` | 异步查询 |
-| `set_block` | `pos`, `block_state`, 可选 `expected_state`, `on_error`, `request_id` | 异步写 |
-| `remove_block` | `pos`, 可选 `expected_state`, `on_error`, `request_id` | 异步写 |
-| `fill_region` | `min`, `max`, `block_state`, 可选 `expected_state`, `on_error`, `request_id` | 异步写 |
-| `replace_blocks` | `min`, `max`, `filter`, `block_state`, 可选 `expected_state`, `on_error`, `request_id` | 异步写 |
-| `batch_set_blocks` | `blocks[]`, 可选 `on_error`, `request_id` | 异步写 |
+| `get_region_sharded` | 同 `get_region`；最多 1,048,576 体素 | MCP 进程自动分片，结果页坐标相对于各分片 |
+| `get_region_sharded_by_request_id` | `world_session_id`, `request_id` | 查询当前 MCP 进程内的分片父任务 |
+| `get_terrain` | `world_session_id`, `dimension`, `min`, `max`, `request_id`, `clearance_height?` | 异步查询 |
+| `set_block` | `pos`, `block_state`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
+| `remove_block` | `pos`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
+| `fill_region` | `min`, `max`, `block_state`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
+| `replace_blocks` | `min`, `max`, `filter`, `block_state`, `request_id`, 可选 `expected_state`, `on_error` | 异步写 |
+| `batch_set_blocks` | `blocks[]`, `request_id`, 可选 `on_error` | 异步写 |
+| `batch_set_blocks_sharded` | 同 batch；最多 16,384 项、1,900,000 字节 | 全部预校验后自动分片，非事务 |
+| `batch_set_blocks_sharded_by_request_id` | `world_session_id`, `request_id` | 查询当前 MCP 进程内的分片写父任务 |
+| `undo_operation` | `world_session_id`, `dimension`, 源 `operation_id`, `request_id`, `on_error?` | 异步条件恢复 |
+| `preload_chunks` | `world_session_id`, `dimension`, `min`, `max`, `request_id` | 显式加载最多 1,024 个区块，加载票据约 5 分钟 |
+| `request_screenshot` | `world_session_id`, `player_uuid`, `request_id` | 直接请求指定玩家当前画面 |
+| `get_screenshot_status` / `get_screenshot` / `cancel_screenshot` | `world_session_id`, `capture_id` | 查询、取得 PNG 或取消截图 |
 | `get_operation` | `world_session_id`, `operation_id` | 同步查询任务 |
+| `get_operation_by_request_id` | `world_session_id`, `request_id` | 按请求 ID 查询已接受任务 |
 | `cancel_operation` | `world_session_id`, `operation_id` | 取消，可能部分完成 |
 | `get_operation_errors` | 同上 + 可选 `cursor` | 错误分页 |
 | `get_query_result` | 同上 + 可选 `cursor` | 结果分页 |
@@ -193,13 +210,14 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 | 单次修改体素 | 262,144 |
 | 单次 batch 条目 | 8,192 |
 | 单操作涉及区块 | 64 |
+| 显式预加载区块 | 1,024（票据约 6,000 Tick 后过期） |
 | 全局排队操作 | 32 |
 | 请求体 | 2 MiB |
 | 单页结果 | 512 KiB |
 | 终态保留 | 5 分钟 |
-| 每 Tick 调度预算 | 约 2 ms / 1 个执行阶段写入候选 |
+| 每 Tick 调度预算 | 约 2 ms，默认最多 256 个写入候选（可配置 1–1024） |
 
-实际值由 `get_world_info.limits` 返回。只读取当前已加载区块；不会隐式加载或生成区块。世界边界、维度和区块未加载都会返回明确错误。
+实际值由 `get_world_info.limits` 返回。默认只读取当前已加载区块，不会为普通查询或写入隐式加载/生成；需要远端区域时先显式调用 `preload_chunks`，它按 Tick 有界加载最多 1,024 个区块并保留约 5 分钟。世界边界、维度和区块未加载都会返回明确错误。
 
 ## 建筑闭环验证
 
@@ -227,7 +245,7 @@ MINECRAFT_MCP_CONFIG=/absolute/path/to/minecraft-mcp.credentials.json node test/
 - 查询是增量一致视图；跨 Tick 期间世界可能被其他玩家/红石/流体改变。
 - 结果页是 JSON；超大 terrain 区域会返回很多页，Agent 应按页消费。
 - 取消/失败可能已修改部分方块；必须重读世界后决定修复。
-- `loaded_only` 下，未加载区域需玩家靠近或管理员加载；不会替 Agent 加载。
+- 默认 `loaded_only`，普通查询和写入不隐式加载区块；可用 `preload_chunks` 显式加载有界区域（会生成缺失区块），票据约 5 分钟后过期。
 - MCP Server 当前使用 stdio；没有实现远程 HTTP 传输。
 
 ## 开发与测试

@@ -47,11 +47,14 @@ async function waitFor(sessionId, operationId, timeoutMs = 120_000) {
   throw new Error(`operation ${operationId} did not terminate`);
 }
 async function submit(name, args, sessionId) {
+  const requestId = args.request_id ?? randomUUID();
   const body = await call(name, {
     ...args,
     world_session_id: sessionId,
-    request_id: args.request_id ?? randomUUID(),
+    request_id: requestId,
   });
+  const found = await call("get_operation_by_request_id", { world_session_id: sessionId, request_id: requestId });
+  assert(found.operation.operation_id === body.operation.operation_id, `${name}: request lookup mismatch`);
   const operation = await waitFor(sessionId, body.operation.operation_id);
   return body.operation.operation_id;
 }
@@ -100,6 +103,32 @@ const world = await call("get_world_info");
 const sessionId = world.world_session_id;
 assert(typeof sessionId === "string", "no world_session_id");
 const dimension = "minecraft:overworld";
+
+// Recover an accepted read by request ID without resubmitting it.
+const lookupRequestId = randomUUID();
+const lookupArgs = { world_session_id: sessionId, dimension,
+  min: { x: 0, y: -64, z: 0 }, max: { x: 0, y: -64, z: 0 }, request_id: lookupRequestId };
+const accepted = await call("get_region", lookupArgs);
+const found = await call("get_operation_by_request_id", { world_session_id: sessionId, request_id: lookupRequestId });
+assert(found.operation.operation_id === accepted.operation.operation_id, "request lookup returned a different operation");
+await waitFor(sessionId, accepted.operation.operation_id);
+const terminal = await call("get_operation_by_request_id", { world_session_id: sessionId, request_id: lookupRequestId });
+assert(terminal.operation.operation_id === accepted.operation.operation_id && terminal.operation.state === "succeeded",
+  "request lookup did not retain the terminal operation");
+const retried = await call("get_region", lookupArgs);
+assert(retried.operation.operation_id === accepted.operation.operation_id, "retry created a second operation");
+const conflict = await client.callTool({ name: "get_region", arguments: { ...lookupArgs, encoding: "palette_rle" } });
+assert(conflict.isError && JSON.parse(conflict.content[0].text).error.code === "IDEMPOTENCY_CONFLICT",
+  "different arguments with the same request ID must conflict");
+for (const [args, expected] of [
+  [{ world_session_id: sessionId, request_id: randomUUID() }, "OPERATION_NOT_FOUND"],
+  [{ world_session_id: sessionId, request_id: "invalid" }, "INVALID_ARGUMENT"],
+  [{ world_session_id: "s-wrong", request_id: lookupRequestId }, "WORLD_SESSION_MISMATCH"],
+  [{ world_session_id: sessionId, request_id: lookupRequestId, extra: true }, "INVALID_ARGUMENT"],
+]) {
+  const response = await client.callTool({ name: "get_operation_by_request_id", arguments: args });
+  assert(response.isError && JSON.parse(response.content[0].text).error.code === expected, `expected ${expected}`);
+}
 console.log(JSON.stringify({ phase: "world", sessionId, players: world.players.length }));
 
 // Error path: no players on this dedicated server, and an unloaded far chunk.

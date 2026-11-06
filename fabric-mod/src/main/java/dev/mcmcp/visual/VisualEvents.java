@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** All sending and player access happens on the server thread. HTTP only records notice bits. */
 public final class VisualEvents {
-	private static final String[] TOOLS = {"get_world_info", "get_player_position", "get_block", "get_region", "get_terrain", "set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks", "get_operation", "cancel_operation", "get_operation_errors", "get_query_result"};
+	private static final String[] TOOLS = {"get_world_info", "get_player_position", "get_block", "get_region", "get_terrain", "set_block", "remove_block", "fill_region", "replace_blocks", "batch_set_blocks", "get_operation", "get_operation_by_request_id", "cancel_operation", "get_operation_errors", "get_query_result"};
 	private final MinecraftServer server;
 	private final String session;
 	private final AtomicLong notices = new AtomicLong();
@@ -25,7 +25,7 @@ public final class VisualEvents {
 	public VisualEvents(MinecraftServer server, String session) { this.server = server; this.session = session; }
 	public static void registerPayload() { PayloadTypeRegistry.clientboundPlay().register(VisualPayload.TYPE, VisualPayload.CODEC); }
 
-	/** Repeated polls coalesce per tool/Tick; distinct tool kinds are retained in a fixed 14-bit set. */
+	/** Repeated polls coalesce per tool/Tick; distinct tool kinds are retained in a fixed bit set. */
 	public void notice(String tool) {
 		for (int i = 0; i < TOOLS.length; i++) if (TOOLS[i].equals(tool)) {
 			long bit = 1L << i; notices.getAndUpdate(value -> value | bit); return;

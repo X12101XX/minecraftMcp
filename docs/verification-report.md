@@ -216,3 +216,44 @@ node test/negative.mjs
 - 使用安装后的 `minecraft-mcp-server` 可执行文件，经官方 SDK stdio Client 握手取得 `{name:\"minecraft-mcp\",version:\"1.1.0\"}`，发现 14 个工具；真实世界返回每 Tick 一个写入候选。
 - 在已加载的专用测试区域 `(24..29,210,8)` 提交 6 个石头/玻璃/完整楼梯状态目标：25 Tick 终态成功、changed=6、逐坐标完整状态 **0 差异**。随后以 expected_state 条件恢复这 6 个测试方块，终态成功，逐点回读全部空气。
 - 本次版本化重新验收聚焦实际安装产物和协议/世界闭环；图形效果与 dedicated/integrated 的完整功能证据沿用第 8 节的同一实现，不把版本号更新称作新一轮图形负载或持久化测试。
+
+## 10. 请求 ID 查询开发验证 — 2026-11-06
+
+- `cd fabric-mod && ./gradlew test build` 成功；`cd mcp-server && npm test` 成功（6 个测试）。
+- 启动已授权的本地 dedicated 测试服，通过真实 MCP SDK stdio 客户端提交单体素 `get_region`，使用原 request ID 查询到同一 operation，等待成功后再次查询并确认同一任务；相同参数重提返回原任务，随机未知 ID 返回 `OPERATION_NOT_FOUND`。本次实测只读世界。
+- 没有实测请求超时竞态、终态 TTL 到期、服务端重启后的恢复、集成服务端或新工具 HUD。查询只在当前会话的保留期有效，不能据查不到断言未写入。
+
+## 11. 能力扩展开发验证 — 2026-11-06
+
+- `cd fabric-mod && ./gradlew test build` 成功；`cd mcp-server && npm test` 的 11 项测试通过。
+- 已授权本地 dedicated 测试服 + 真实 MCP SDK stdio 客户端：主世界读取测试位置生物群系 `minecraft:plains`、方块光 0、天空光 15；分片读取 131,072 体素、16 个分片和 16 页，计数完整。
+- 测试夹具 `(24,210,8)` 先确认为空气，写入石头后执行条件恢复，再完整 BlockState 回读为原始空气；未实测带 NBT、ABA 冲突或间接副作用恢复，也不承诺支持。
+- 另将该夹具从空气写为石头，再写为玻璃；对石头任务执行条件恢复，终态失败且错误为 `PRECONDITION_FAILED`，回读玻璃未被覆盖。随后用 expected_state 条件恢复空气并回读确认。
+- 未实测集成服务端、无天空光维度、未初始化光照、分片中途断连/取消和日志到期；未重新测试可视化性能和保存重启。
+
+## 12. 分片写入、实体与截图开发验证 — 2026-11-06
+
+- `cd fabric-mod && ./gradlew test build` 通过；`cd mcp-server && npm test` 的 18 项测试通过。
+- 真实 dedicated 测试服及 MCP SDK stdio：72 个目标分属 72 个已加载区块；最后一项目标方块 ID 无效时，分片父任务失败、changed=0，72 个位置回读均为空气。随后有效分片写入 72 个石头，72 点逐点回读正确；再以 expected_state 恢复空气，72 点回读均为空气。
+- 首次测试在两个父任务终态保留时遇到 `RESOURCE_EXHAUSTED`，通过新的 MCP 进程恢复夹具；随后将保留父任务上限从 2 调整为 8，并在同一进程重跑上述全部流程成功。
+- 在测试服临时创建并清理指定 UUID 的盔甲架；`get_entity` 返回真实类型和 Y 坐标，移除后返回 `ENTITY_NOT_FOUND_OR_UNLOADED`。无在线玩家时截图请求返回 `PLAYER_NOT_FOUND`。
+- `runClient` 默认因缺少 `xvfb-run` 失败；显式关闭 Xvfb 后真实客户端启动到图形界面，但此版本忽略 `--server` 参数，桌面 Wayland 捕获不可用，未完成进入世界和玩家逐次同意截图的正向闭环。未实测截图拒绝、断连、大图或图像内容，也未实测 integrated 暂停恢复。
+
+## 13. 直接截图与回归修复 — 2026-11-06
+
+- 按用户要求移除截图授权弹窗；通过 `--quickPlayMultiplayer` 将 Fabric 测试客户端连接至真实 dedicated 测试服，从 MCP SDK stdio 发起截图，任务 `succeeded`，取得 936×1018 PNG，333,818 字节。相同 request ID 返回相同 capture ID，重复读取返回相同图像；另一次截图人工查看为实际测试世界画面。临时图片已删除。
+- 旧授权弹窗方案曾在客户端界面打开时返回 `CLIENT_CAPTURE_FAILED`；现已按用户要求删除该授权交互。客户端断线清理切回客户端线程，截图超时不再报告为用户拒绝，传输每客户端 Tick 最多 4 个 16 KiB 分片。
+- 修复分片写入的空 `properties` 与省略参数幂等不一致，以及分片读取取消响应缺少 `cancel_requested`；Java `./gradlew test build` 与 MCP `npm test`（18 项）通过。
+- 写速率改为可配置，默认 256 候选/Tick：真实 dedicated 世界 `fill_region` 98,304 方块，19.667 秒完成、changed=98,304、391 Tick（约 4,998 方块/秒）；再以 expected_state 恢复空气 98,304 方块，20.724 秒完成，抽样回读空气。`SERVER_TICK_TIMEOUT` 现在报告 `accepted/queued/server_tick_age_ms/tick_stalled`，Tick 停顿最多等待约 2 秒。
+- 远端区块实测：区块 `188,188` 的 `(3008,-60,3008)` 在预加载前读取返回 `CHUNK_NOT_LOADED`；`preload_chunks` 请求该单区块，5 Tick 后 succeeded，counts 为 1/1，随后 `get_block` 成功。超过 1,024 区块的请求返回 `LIMIT_EXCEEDED`。预加载后在该处写入石头并回读成功，再以 expected_state 恢复空气。
+- 未实测预加载票据在约 6,000 Tick 后自然过期、上千区块同时加载、取消后的票据清理与保存重启；`preload_chunks` 会产生并保存缺失区块。
+- 未实测 integrated 单人世界、4 MiB 上限、截图中途断连与多人客户端；未将客户端自报画面作为防篡改证明。
+
+## 14. 2.0.0 发布包安装验收 — 2026-11-06
+
+- 版本同步为 **2.0.0**：`gradle.properties`、npm package/lockfile、MCP 握手版本、安装脚本与 README 产物路径。
+- `cd fabric-mod && ./gradlew test build` 通过，产物 `minecraft-mcp-2.0.0.jar`；JAR 元数据为 `id=minecraft-mcp`、`version=2.0.0`、`environment=*`。
+- `cd mcp-server && npm test` 的 18 项测试通过；`npm pack` 生成 `minecraft-mcp-server-2.0.0.tgz`。
+- 完整包 `./install.sh` 在隔离 npm prefix、Skill 与 mods 目录实际安装成功；安装后的 MCP Server 通过官方 SDK 发现 **28 个工具**，包含 `preload_chunks`。
+- 四个发布资产的 SHA-256 已生成；完整包包含安装脚本、技能目录、示例配置、许可证与验证报告。
+- 安装后的 JAR 未单独启动新的 dedicated 进程；真实世界验证使用同一构建的 Loom 开发运行（Java 类相同）。发布前仍应补跑安装 JAR 启动检查。

@@ -1,6 +1,7 @@
 package dev.mcmcp;
 
 import dev.mcmcp.game.GameSession;
+import dev.mcmcp.screenshot.ScreenshotCoordinator;
 import dev.mcmcp.visual.VisualEvents;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -21,6 +22,7 @@ public final class MinecraftMcpMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		VisualEvents.registerPayload();
+		ScreenshotCoordinator.register();
 		ServerLifecycleEvents.SERVER_STARTED.register(this::onServerStarted);
 		ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
