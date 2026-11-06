@@ -12,6 +12,13 @@ loom {
 			sourceSet sourceSets.main
 		}
 	}
+	runs {
+		client {
+			runDir "../integration/client"
+			programArg "--username"
+			programArg "DevBuilder"
+		}
+	}
 }
 
 dependencies {

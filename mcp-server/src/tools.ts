@@ -91,7 +91,7 @@ export const TOOLS: Tool[] = [
     name: "get_block",
     title: "Get block",
     description:
-      "Synchronous. Reads one loaded block, returning its complete block state plus independent air, fluid, and collision facts. Never loads a chunk.",
+      "Synchronous. Reads one loaded block, returning its complete block state plus independent air, fluid, and collision facts. Briefly highlights that exact block on modded clients in the same dimension. Never loads a chunk.",
     inputSchema: {
       type: "object",
       properties: { world_session_id: session, dimension, pos },
@@ -104,7 +104,7 @@ export const TOOLS: Tool[] = [
     name: "get_region",
     title: "Get region snapshot",
     description:
-      "Asynchronous lossless region read. Returns an operation_id; poll get_operation, then page get_query_result. Every voxel is preserved in x-fastest, z, then y order with a per-page palette. encoding auto chooses the smallest lossless representation.",
+      "Asynchronous lossless region read. Briefly highlights the exact inclusive requested box on modded clients in the same dimension. Returns an operation_id; poll get_operation, then page get_query_result. Every voxel is preserved in x-fastest, z, then y order with a per-page palette. encoding auto chooses the smallest lossless representation.",
     inputSchema: {
       type: "object",
       properties: {
@@ -124,7 +124,7 @@ export const TOOLS: Tool[] = [
     name: "get_terrain",
     title: "Analyze terrain",
     description:
-      "Asynchronous terrain analysis over an explicit bounded box. Each XZ column includes highest hits, air/fluid/collision intervals, multiple support candidates, full top-face and clearance facts, and explicit truncation. Read pages with get_query_result.",
+      "Asynchronous terrain analysis over an explicit bounded box. Briefly highlights the exact requested scan box on modded clients in the same dimension. Each XZ column includes highest hits, air/fluid/collision intervals, multiple support candidates, full top-face and clearance facts, and explicit truncation. Read pages with get_query_result.",
     inputSchema: {
       type: "object",
       properties: {
@@ -185,7 +185,7 @@ export const TOOLS: Tool[] = [
     name: "fill_region",
     title: "Fill region",
     description:
-      "Asynchronous region fill with one complete block state. Bounds are inclusive. The operation runs across game ticks and reports real changed/unchanged/failed counts. Returns an operation_id.",
+      "Asynchronous region fill with one complete block state. Bounds are inclusive. Processes at most one candidate per server tick, visibly placing blocks in x-fastest, z, then y order. Reports real changed/unchanged/failed counts. Returns an operation_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -207,7 +207,7 @@ export const TOOLS: Tool[] = [
     name: "replace_blocks",
     title: "Replace matching blocks",
     description:
-      "Asynchronous. Scans an inclusive region and replaces only blocks matching filter (block id plus optional property subset). Non-matches count as skipped. Returns an operation_id.",
+      "Asynchronous. Scans an inclusive region one candidate per server tick and replaces only blocks matching filter (block id plus optional property subset). Non-matches count as skipped. Returns an operation_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -238,7 +238,7 @@ export const TOOLS: Tool[] = [
     name: "batch_set_blocks",
     title: "Batch set blocks",
     description:
-      "Asynchronous. Applies up to 8192 distinct coordinates in one accepted operation. Every target state is validated before any write. Duplicate coordinates are rejected. Returns an operation_id.",
+      "Asynchronous. Applies up to 8192 distinct coordinates in input order, at most one candidate per server tick. Every target state is validated before any write; modded clients see translucent pending targets for 20 server ticks before placement begins. Duplicate coordinates are rejected. Returns an operation_id; preview is not completion.",
     inputSchema: {
       type: "object",
       properties: {

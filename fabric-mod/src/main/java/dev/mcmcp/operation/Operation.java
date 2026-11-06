@@ -64,6 +64,7 @@ public final class Operation {
 	public BlockState[] batchExpected;
 	public int prepareIndex;
 	public boolean prepared;
+	public int previewStartedTick = -1;
 
 	// Scan/execution cursor
 	public int cursor;

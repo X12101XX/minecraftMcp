@@ -105,6 +105,9 @@ public final class BridgeServer {
 			}
 			try {
 				route(exchange);
+			} catch (BridgeException e) {
+				operations.reportError(e.code);
+				throw e;
 			} finally {
 				inFlight.decrementAndGet();
 			}

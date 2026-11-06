@@ -71,7 +71,7 @@
 | 一页结果或错误响应 | 512 KiB | 524,288 字节，按实际 UTF-8 JSON 响应体计量，包含信封、palette 和游标 |
 | 终态保留期 | 5 分钟 | 进入终态后开始计时；读取、重试和取消请求不续期 |
 | 每 tick 工作预算 | 全局约 2 ms | 读写共享服务端线程调度预算，至少在每个工作单元之间检查；不承诺单个引擎调用可被中断 |
-| 每 tick 写入预算 | 全局最多 256 个候选坐标处理 | 变更、无需变更、跳过与失败都消耗本次写任务的候选处理额度；多任务共享，不能各自领取 256 |
+| 每 tick 写入预算 | 全局最多 1 个执行阶段候选坐标 | 变更、无需变更、跳过与执行失败都消耗候选额度；batch 注册表预校验独立分片，全部通过后才开始执行 |
 
 单次引擎调用和邻居更新可能超过约 2 ms；这不是硬实时保证。查询扫描也必须分片并计入全局时间预算，不能用“不修改方块”为理由在一个 tick 内扫描全部区域。
 
@@ -181,6 +181,19 @@
 
 若服务端无法把单个不可拆分记录编码进 512 KiB，查询在发布结果前以 `RESULT_TOO_LARGE` 失败，不返回超限页或静默截断。
 
+### 4.6 游戏内过程展示（不改变工具参数）
+
+观看者客户端与服务端均安装当前构建的 Mod + Fabric API，单人集成世界安装一次即可。无需额外预览工具或逐方块网络请求：`get_block` 标出单方块，`get_region` / `get_terrain` 标出与请求 min/max 相同的包含边界框，按 30 Tick × 50 ms 的客户端本地时长淡出。工具标签、玩家查询、bootstrap、分页和任务轮询显示在活动面板；每服务端 Tick 的同工具通知合并，已认证请求的同步验证失败显示红色错误码（同 Tick 多个同步错误只显示最近一个）。
+
+五个写工具共用串行执行器，每 Tick 最多处理一个候选；区域按 X、Z、Y 顺序，batch 严格保留输入顺序。不变、过滤跳过、条件失败不播放伪造的成功落位。正常更新、邻居变化、保存、计数、部分失败和取消不回滚的语义保持不变。
+
+`batch_set_blocks` 在所有目标/expected_state 注册表预校验成功后发布待放列表，等待 **20 个服务端 Tick** 才开始执行；这段时间 state 为 running，processed 仍为 0。非法后续片段必须阻止整个批次的任何写入/目标模型。目标模型是可交互世界之外的半透明预览；普通状态使用真实烘焙模型，特殊渲染目标使用真实形状的半透明光体，空气用删除框表示。处理一个候选后移除该项；完成、取消、失败时清掉剩余预览。
+
+展示通过单向 `minecraft-mcp:visual_v1` S2C payload 发送：session、dimension、operation/event ID、单调 sequence、事件类型、duration、包含边界 min/max、style、offset/total/processed，以及每页至多 128 个 `{pos,完整 BlockState}`。一次最多 8192 项、每 Tick 最多 4 页；不传凭据、不引入客户端写入入口、不加载区块。客户端最多保留 64 个选框、一个 8192 项活动列表和最近 3 个工具标签；10 秒无进度清除列表，换维度/换世界/断连/session 变更立即清空。
+
+原版客户端仍看到真实逐块世界更新，但没有自定义展示。HUD/光效/幽灵模型都不证明任务完成，仍须轮询并回读；客户端慢帧、丢失观察时机或离得太远可能看不到每次短时提示，不能将显示帧率当作服务端处理计数。
+
+
 ## 5. 十个世界工具
 
 以下调用使用普通 `tools/call` 的 `{name, arguments}` 形状；外层 JSON-RPC ID 和版本由 SDK 处理。示例 `s-example`、`op-*` 是服务端标识符的示意值。
@@ -202,7 +215,7 @@
   "world_session_id":"s-example",
   "dimensions":[{"id":"minecraft:overworld","min_y":-64,"max_y_exclusive":320,"min_x":-29999984,"max_x":29999983,"min_z":-29999984,"max_z":29999983}],
   "players":[{"player_uuid":"22222222-2222-4222-8222-222222222222","name":"Builder"}],
-  "limits":{"query_voxels":65536,"write_voxels":262144,"batch_entries":8192,"chunks_per_operation":64,"queued_operations":32,"request_bytes":2097152,"page_bytes":524288,"terminal_ttl_seconds":300,"tick_budget_ms":2,"write_candidates_per_tick":256},
+  "limits":{"query_voxels":65536,"write_voxels":262144,"batch_entries":8192,"chunks_per_operation":64,"queued_operations":32,"request_bytes":2097152,"page_bytes":524288,"terminal_ttl_seconds":300,"tick_budget_ms":2,"write_candidates_per_tick":1},
   "supported_tools":["get_world_info","get_player_position","get_block","get_region","get_terrain","set_block","remove_block","fill_region","replace_blocks","batch_set_blocks","get_operation","cancel_operation","get_operation_errors","get_query_result"]
 }
 ```

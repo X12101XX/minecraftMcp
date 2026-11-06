@@ -19,6 +19,8 @@ MINECRAFT_MCP_CONFIG=/path/to/minecraft-mcp.credentials.json \
 
 `MINECRAFT_MCP_CONFIG` must point at the credentials file written by the Fabric mod. Start Minecraft and enter a world before calling world tools.
 
+To see the in-game build process, install the matching Minecraft MCP Mod and Fabric API on both the server and viewing clients (once for singleplayer). Reads briefly highlight their exact requested range. Validated batches show translucent pending targets for 20 server ticks, then all writes process at most one candidate per tick. The activity HUD shows tool calls, operation progress, and errors. Previews are not world blocks or completion evidence; keep polling the same operation and verify by reading back.
+
 ## OMP / Claude Desktop
 
 ```json

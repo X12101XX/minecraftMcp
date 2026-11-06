@@ -8,7 +8,8 @@
 	"license": "GPL-3.0-only",
 	"environment": "*",
 	"entrypoints": {
-		"main": ["dev.mcmcp.MinecraftMcpMod"]
+		"main": ["dev.mcmcp.MinecraftMcpMod"],
+		"client": ["dev.mcmcp.client.MinecraftMcpClient"]
 	},
 	"depends": {
 		"fabricloader": ">=0.20.1",

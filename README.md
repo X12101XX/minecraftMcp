@@ -7,6 +7,7 @@
 - Fabric Mod、MCP Server、构建与集成验证均已完成。
 - 已验证 Minecraft **26.3** + Fabric Loader **0.20.1** + Fabric API **0.165.2+26.3** + Loom **1.19.3**。
 - 真实玩家、地形读取、两层房屋搭建、区域重读、缺陷检测与修复、保存重启、取消及大规模写入已实测。
+- 建造过程可视化：查看范围短暂亮起、batch 目标半透明预览、所有写工具每 Tick 最多处理一个候选；观看特效需客户端也安装本 Mod 与 Fabric API。
 - 完整的测试数据、边界和未覆盖项见 [验证报告](docs/verification-report.md)。
 
 ## 架构
@@ -57,6 +58,24 @@ cd fabric-mod
 ```
 
 把 `minecraft-mcp-1.0.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。
+
+需要看到 Agent 的选区与待放方块时，**服务端和观看者客户端都安装同一构建的本 Mod + Fabric API**；无需其他前置 Mod。只装服务端仍可正常读取/逐块写入，但原版客户端没有自定义预览。单人世界安装一次即可。
+
+### 游戏内展示
+
+| Agent 动作 | 实际画面 |
+| --- | --- |
+| `get_block` | 精确目标方块的青色选框，约 1.5 秒后消失 |
+| `get_region` / `get_terrain` | 与请求 min/max 完全一致的包含边界选区，短暂亮起后淡出 |
+| `batch_set_blocks` | 全部状态验证后显示待放列表的半透明模型，预览 20 Tick，再按输入顺序逐块落位；已处理项立即退出预览 |
+| `set_block` / `fill_region` / `replace_blocks` | 正常世界更新逐块发生；新放置绿色、删除红色、不变/跳过金色、坐标错误红色 |
+| bootstrap、玩家查询、任务轮询、分页、取消 | 左上角 Agent 活动面板显示最近工具与真实写任务进度；同一 Tick 的重复轮询合并，不反复闪屏 |
+
+预览不是世界方块，不参与碰撞、交互或保存，也不代表写入成功。普通方块保留原模型、材质和朝向；使用特殊渲染器、没有烘焙模型的目标以其实际形状显示半透明光体，空气目标显示红色删除框。取消/失败/完成、换世界、换维度和断连会清除待放模型；空间特效只发往同维度且支持该通道的客户端。
+
+固定写入节奏优先保证过程可见，而不是旧版本的批量吞吐。20 TPS 时最多约 20 个候选/秒，大区域可能运行数分钟乃至数小时；请轮询已有 operation，不要因耗时增加重复提交。
+
+实机证据：[9 秒建造过程录像](docs/media/build-process.mp4)；覆盖范围与未验证边界见[本次回归报告](docs/verification-report.md#8-建造过程可视化回归--2026-11-06)。
 
 运行开发服务端（首次运行需由你本人阅读并接受 Minecraft EULA；仓库不自动代接受）：
 
@@ -178,7 +197,7 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 | 请求体 | 2 MiB |
 | 单页结果 | 512 KiB |
 | 终态保留 | 5 分钟 |
-| 每 Tick 调度预算 | 约 2 ms / 256 个写入候选 |
+| 每 Tick 调度预算 | 约 2 ms / 1 个执行阶段写入候选 |
 
 实际值由 `get_world_info.limits` 返回。只读取当前已加载区块；不会隐式加载或生成区块。世界边界、维度和区块未加载都会返回明确错误。
 
@@ -223,6 +242,11 @@ cd mcp-server && npm test
 # 真实游戏 E2E（需先启动带 Mod 的世界）
 cd mcp-server
 MINECRAFT_MCP_CONFIG=/absolute/path/to/minecraft-mcp.credentials.json node test/e2e.mjs
+MINECRAFT_MCP_CONFIG=/absolute/path/to/minecraft-mcp.credentials.json node test/visualization.mjs
+
+# visualization 默认要求主世界 x=24..35,z=8..12,y=150..160 的测试夹具位置为空气；
+# 若该高度已使用，选择空闲高度，例如 MINECRAFT_VISUAL_Y=170。
+# 此脚本会放置测试方块，不要在生产存档运行。
 MINECRAFT_MCP_CONFIG=/absolute/path/to/minecraft-mcp.credentials.json node test/negative.mjs
 ```
 

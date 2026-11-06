@@ -14,6 +14,7 @@ import dev.mcmcp.query.BlockStateKey;
 import dev.mcmcp.query.RegionSnapshot;
 import dev.mcmcp.query.TerrainFact;
 import dev.mcmcp.query.TerrainSnapshot;
+import dev.mcmcp.visual.VisualEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
@@ -50,7 +51,7 @@ public final class OperationManager {
 	public static final int MAX_CHUNKS = 64;
 	public static final int MAX_QUEUED = 32;
 	public static final int MAX_ACTIVE_READS = 4;
-	public static final int WRITE_CANDIDATES_PER_TICK = 256;
+	public static final int WRITE_CANDIDATES_PER_TICK = 1;
 	public static final long TICK_BUDGET_NANOS = 2_000_000L;
 	private static final int MAX_IMMEDIATE_TASKS_PER_TICK = 128;
 	private static final SecureRandom RANDOM = new SecureRandom();
@@ -64,6 +65,7 @@ public final class OperationManager {
 	private final String sessionId;
 	private final CursorCodec cursors;
 	private final boolean allowWrites;
+	private final VisualEvents visuals;
 	private final BlockingQueue<Runnable> immediate = new ArrayBlockingQueue<>(128);
 	private final List<Operation> pendingReads = new ArrayList<>();
 	private final List<Operation> pendingWrites = new ArrayList<>();
@@ -84,10 +86,15 @@ public final class OperationManager {
 		this.sessionId = sessionId;
 		this.cursors = cursors;
 		this.allowWrites = allowWrites;
+		this.visuals = new VisualEvents(access.server(), sessionId);
 	}
 
 	public String sessionId() {
 		return sessionId;
+	}
+
+	public void reportError(String code) {
+		visuals.failure(code);
 	}
 
 	public CompletableFuture<JsonObject> callOnServer(ServerCall call) throws BridgeException {
@@ -114,6 +121,7 @@ public final class OperationManager {
 
 	public JsonObject worldInfo(JsonObject args) throws BridgeException {
 		Json.only(args, Set.of(), "arguments");
+		visuals.notice("get_world_info");
 		JsonObject root = new JsonObject();
 		root.addProperty("ok", true);
 		root.addProperty("ready", true);
@@ -134,6 +142,7 @@ public final class OperationManager {
 		requireSession(args);
 		String selector = Json.string(args, "player", false, null);
 		ServerPlayer player = access.findPlayer(selector);
+		visuals.notice("get_player_position");
 		ServerLevel level = player.level();
 		JsonObject root = new JsonObject();
 		root.addProperty("ok", true);
@@ -169,6 +178,8 @@ public final class OperationManager {
 		root.addProperty("dimension", dimension);
 		root.add("pos", Json.pos(pos[0], pos[1], pos[2]));
 		JsonObject facts = access.blockFacts(level, blockPos);
+		visuals.notice("get_block");
+		visuals.range(dimension, "block", pos[0], pos[1], pos[2], pos[0], pos[1], pos[2], "read", 30);
 		facts.entrySet().forEach(entry -> root.add(entry.getKey(), entry.getValue()));
 		root.addProperty("observed_tick", access.tick());
 		return root;
@@ -220,9 +231,11 @@ public final class OperationManager {
 			case "batch_set_blocks" -> createBatch(args, requestId);
 			default -> throw BridgeException.of("UNKNOWN_TOOL", "unknown tool", null);
 		};
+		visuals.notice(tool);
 		operations.put(op.id, op);
 		idempotency.put(requestId, new IdempotencyRecord(canonical, op.id));
 		if (op.isRead()) {
+			visuals.range(op.dimension, op.id, op.minX, op.minY, op.minZ, op.maxX, op.maxY, op.maxZ, "read", 30);
 			pendingReads.add(op);
 		} else {
 			pendingWrites.add(op);
@@ -234,6 +247,7 @@ public final class OperationManager {
 		Json.only(args, Set.of("world_session_id", "operation_id"), "arguments");
 		requireSession(args);
 		Operation op = requireOperation(args);
+		visuals.notice("get_operation");
 		return op.envelope();
 	}
 
@@ -241,6 +255,7 @@ public final class OperationManager {
 		Json.only(args, Set.of("world_session_id", "operation_id"), "arguments");
 		requireSession(args);
 		Operation op = requireOperation(args);
+		visuals.notice("cancel_operation");
 		boolean requested;
 		if (op.isTerminal()) {
 			requested = op.snapshotJson().get("state").getAsString().equals("cancelled");
@@ -251,6 +266,8 @@ public final class OperationManager {
 			requested = true;
 			if (op.state() == Operation.State.QUEUED) {
 				op.finish(access.tick(), Operation.State.CANCELLED, null, null, null);
+				visuals.clear(op.dimension, op.id);
+				visuals.progress(op.dimension, op.id, op.processed, op.total, "cancelled");
 			}
 			// A running operation observes the flag at the next work-unit boundary.
 		}
@@ -265,6 +282,7 @@ public final class OperationManager {
 		Json.only(args, Set.of("world_session_id", "operation_id", "cursor"), "arguments");
 		requireSession(args);
 		Operation op = requireOperation(args);
+		visuals.notice("get_operation_errors");
 		String cursor = Json.string(args, "cursor", false, null);
 		if (!op.isTerminal()) {
 			throw BridgeException.of("OPERATION_NOT_READY", "operation has not reached a terminal state", null);
@@ -343,6 +361,7 @@ public final class OperationManager {
 		Json.only(args, Set.of("world_session_id", "operation_id", "cursor"), "arguments");
 		requireSession(args);
 		Operation op = requireOperation(args);
+		visuals.notice("get_query_result");
 		String cursor = Json.string(args, "cursor", false, null);
 		if (!op.isTerminal()) {
 			throw BridgeException.of("OPERATION_NOT_READY", "operation has not reached a terminal state", null);
@@ -372,12 +391,13 @@ public final class OperationManager {
 			return;
 		}
 		long tickStart = System.nanoTime();
-		int tickWritesBefore = activeWrite == null ? 0 : activeWrite.processed;
+		int writes = 0;
 		int tickReadsBefore = 0;
 		for (Operation read : activeReads) {
 			tickReadsBefore += read.processed;
 		}
 		int tick = access.tick();
+		visuals.tick();
 		for (int i = 0; i < MAX_IMMEDIATE_TASKS_PER_TICK; i++) {
 			Runnable task = immediate.poll();
 			if (task == null) {
@@ -398,6 +418,8 @@ public final class OperationManager {
 			Operation op = iterator.next();
 			if (op.cancelRequested) {
 				op.finish(tick, Operation.State.CANCELLED, null, null, null);
+				visuals.clear(op.dimension, op.id);
+				visuals.progress(op.dimension, op.id, op.processed, op.total, "cancelled");
 				iterator.remove();
 				continue;
 			}
@@ -410,19 +432,22 @@ public final class OperationManager {
 			}
 		}
 		if (activeWrite != null) {
-			if (activeWrite.cancelRequested) {
-				activeWrite.finish(tick, Operation.State.CANCELLED, null, null, null);
-				activeWrite = null;
-			} else if (processWrite(activeWrite, tick, deadline)) {
+			Operation writing = activeWrite;
+			int processedBefore = writing.processed;
+			if (writing.cancelRequested) {
+				writing.finish(tick, Operation.State.CANCELLED, null, null, null);
+			} else {
+				processWrite(writing, tick, deadline);
+			}
+			writes = writing.processed - processedBefore;
+			visuals.progress(writing.dimension, writing.id, writing.processed, writing.total, writing.state().json());
+			if (writing.isTerminal()) {
+				visuals.clear(writing.dimension, writing.id);
 				activeWrite = null;
 			}
 		}
 		cleanupExpired();
 		long elapsed = System.nanoTime() - tickStart;
-		int writes = activeWrite == null ? 0 : activeWrite.processed - tickWritesBefore;
-		if (writes < 0) {
-			writes = 0;
-		}
 		int reads = 0;
 		for (Operation read : activeReads) {
 			reads += read.processed;
@@ -608,7 +633,7 @@ public final class OperationManager {
 		return false;
 	}
 
-	private boolean prepareWrite(Operation op, int tick) {
+	private boolean prepareWrite(Operation op, int tick, long deadline) {
 		if (op.prepared) {
 			return true;
 		}
@@ -618,7 +643,8 @@ public final class OperationManager {
 		}
 		int end = Math.min(op.total, op.prepareIndex + 512);
 		boolean invalid = false;
-		while (op.prepareIndex < end) {
+		int initialIndex = op.prepareIndex;
+		while (op.prepareIndex < end && (op.prepareIndex == initialIndex || System.nanoTime() < deadline)) {
 			int i = op.prepareIndex;
 			JsonObject item = op.batchBlocks.get(i).getAsJsonObject();
 			try {
@@ -655,8 +681,21 @@ public final class OperationManager {
 	}
 
 	private boolean processWrite(Operation op, int tick, long deadline) {
-		if (!prepareWrite(op, tick)) {
+		if (!prepareWrite(op, tick, deadline)) {
 			return true;
+		}
+		if (!op.prepared) {
+			return false;
+		}
+		if (op.batchTargets != null) {
+			if (op.previewStartedTick < 0) {
+				visuals.preview(op.dimension, op.id, op.batchX, op.batchY, op.batchZ, op.batchTargets);
+				op.previewStartedTick = tick;
+				return false;
+			}
+			if (tick - op.previewStartedTick < 20) {
+				return false;
+			}
 		}
 		ServerLevel level;
 		try {
@@ -712,6 +751,7 @@ public final class OperationManager {
 				op.skipped++;
 				op.processed++;
 				op.cursor++;
+				visuals.range(op.dimension, op.id + "-step", x, y, z, x, y, z, "unchanged", 12);
 				work++;
 				continue;
 			}
@@ -738,6 +778,7 @@ public final class OperationManager {
 				op.succeeded++;
 				op.processed++;
 				op.cursor++;
+				visuals.range(op.dimension, op.id + "-step", x, y, z, x, y, z, "unchanged", 12);
 				work++;
 				continue;
 			}
@@ -770,6 +811,7 @@ public final class OperationManager {
 			op.changed++;
 			op.succeeded++;
 			op.processed++;
+			visuals.range(op.dimension, op.id + "-step", x, y, z, x, y, z, target.isAir() ? "remove" : "place", 12);
 			if (op.errorCapacityExhausted()) {
 				finishWrite(op, tick, "RESOURCE_EXHAUSTED");
 				return true;
@@ -788,6 +830,7 @@ public final class OperationManager {
 				false, effectUnknown, details));
 		op.failed++;
 		op.processed++;
+		visuals.range(op.dimension, op.id + "-step", x, y, z, x, y, z, "error", 30);
 	}
 
 	private void finishWrite(Operation op, int tick, String failureCode) {
@@ -832,6 +875,7 @@ public final class OperationManager {
 
 	public void shutdown() {
 		shuttingDown = true;
+		visuals.shutdown();
 		int tick = access.tick();
 		for (Operation op : pendingReads) {
 			op.finish(tick, Operation.State.FAILED, "WORLD_SESSION_ENDED", "world session ended", null);
