@@ -160,7 +160,11 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 
 	private static void collectQuads(Minecraft client, ClientLevel level, VisualPayload.Entry ghost, List<BakedQuad> quads, List<ColoredQuad> result) {
 		for (BakedQuad quad : quads) {
-			int tint = quad.materialInfo().isTinted() ? client.getBlockColors().getTintSource(ghost.state(), quad.materialInfo().tintIndex()).colorInWorld(ghost.state(), level, ghost.pos()) : 0xFFFFFF;
+			int tint = 0xFFFFFF;
+			if (quad.materialInfo().isTinted()) {
+				var source = client.getBlockColors().getTintSource(ghost.state(), quad.materialInfo().tintIndex());
+				if (source != null) tint = source.colorInWorld(ghost.state(), level, ghost.pos());
+			}
 			QuadInstance instance = new QuadInstance(); instance.setColor(0x66000000 | (tint & 0xFFFFFF)); instance.setLightCoords(0xF000F0); instance.setOverlayCoords(OverlayTexture.NO_OVERLAY);
 			result.add(new ColoredQuad(quad, instance));
 		}

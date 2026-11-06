@@ -44,6 +44,7 @@ public final class BridgeServer {
 	private final BridgeConfig config;
 	private final OperationManager operations;
 	private final ScreenshotCoordinator screenshots;
+	private final String cameraPlayer;
 	private final byte[] tokenBytes;
 	private HttpServer server;
 	private ExecutorService executor;
@@ -51,10 +52,12 @@ public final class BridgeServer {
 	private long rateWindow = System.nanoTime();
 	private int rateCount;
 
-	public BridgeServer(BridgeConfig config, OperationManager operations, ScreenshotCoordinator screenshots) {
+	public BridgeServer(BridgeConfig config, OperationManager operations, ScreenshotCoordinator screenshots,
+			String cameraPlayer) {
 		this.config = config;
 		this.operations = operations;
 		this.screenshots = screenshots;
+		this.cameraPlayer = cameraPlayer == null ? "" : cameraPlayer;
 		this.tokenBytes = config.token.getBytes(StandardCharsets.UTF_8);
 	}
 
@@ -231,7 +234,7 @@ public final class BridgeServer {
 		if (!operations.sessionId().equals(session)) {
 			throw BridgeException.of("WORLD_SESSION_MISMATCH", "world session has changed", null);
 		}
-		String player = start ? Json.string(args, "player_uuid", true, null) : null;
+		String player = start && args.has("player_uuid") ? Json.string(args, "player_uuid", true, null) : null;
 		String request = start ? Json.string(args, "request_id", true, null) : null;
 		String id = start ? null : Json.string(args, "capture_id", true, null);
 		AtomicReference<byte[]> image = new AtomicReference<>();
@@ -241,9 +244,15 @@ public final class BridgeServer {
 				response.addProperty("ok", true);
 				response.addProperty("world_session_id", session);
 				if (start) {
-					UUID uuid = UUID.fromString(player);
-					if (!uuid.toString().equals(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
-					response.addProperty("capture_id", screenshots.start(session, uuid, request));
+					String captureId;
+					if (player == null) {
+						captureId = screenshots.startBySelector(session, cameraPlayer, request);
+					} else {
+						UUID uuid = UUID.fromString(player);
+						if (!uuid.toString().equals(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
+						captureId = screenshots.start(session, uuid, request);
+					}
+					response.addProperty("capture_id", captureId);
 				} else {
 					if (tool.equals("cancel_screenshot")) screenshots.cancel(session, id);
 					ScreenshotCoordinator.Status status = screenshots.status(session, id);

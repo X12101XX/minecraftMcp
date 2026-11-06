@@ -50,6 +50,6 @@ If a submission response is lost, look up the operation with its original `world
 
 Sharded reads are incrementally sampled; their parent requests and results exist only in the current MCP server process. Conditional undo only restores directly recorded block states if the current state matches; it cannot detect ABA changes or restore block entity data and indirect effects.
 
-Sharded writes validate all targets before writing but are not transactions; their parent records are process-local. Screenshots capture the named online player's view without a consent prompt and may include private chat and HUD; restrict access to the bridge credentials. Normal reads and writes never load chunks implicitly; call `preload_chunks` first for a bounded remote area (up to 1,024 chunks, tickets expire after about 6,000 ticks).
+Sharded writes validate all targets before writing but are not transactions; their parent records are process-local. Screenshots use the dedicated account named by `camera_player` in `minecraft-mcp.json` (a separate fake/camera client), or an explicit online `player_uuid` when supplied. Set `camera_player` to keep captures independent of real players. Images may include chat and HUD.
 
 See the repository `docs/tool-contracts.md` for full parameters, limits, and error semantics.

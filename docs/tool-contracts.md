@@ -460,12 +460,12 @@
 
 ### 客户端截图
 
-`request_screenshot` 参数为 `world_session_id`、目标在线玩家的小写 `player_uuid` 和 `request_id`；返回 `capture_id`。相同请求 ID 和玩家在保留期内返回同一 capture，不同玩家冲突。客户端直接截图，不显示授权提示；画面可能包含 HUD、聊天等隐私，持有 MCP 凭据即可请求。同一玩家最多一个待处理请求，全局最多四个保留请求；等待 30 秒，终态保留 60 秒。
+`request_screenshot` 参数为 `world_session_id`、`request_id` 和可选的在线玩家小写 `player_uuid`；返回 `capture_id`。省略 `player_uuid` 时使用配置 `camera_player` 指定的专用相机账号（名称或 UUID），因此默认不截取真实玩家画面。相同请求 ID 和玩家在保留期内返回同一 capture，不同玩家冲突。客户端直接截图，不显示授权提示；画面可能包含 HUD、聊天等隐私，持有 MCP 凭据即可请求。同一玩家最多一个待处理请求，全局最多四个保留请求；等待 30 秒，终态保留 60 秒。
 
 用 `get_screenshot_status`、`cancel_screenshot` 或 `get_screenshot` 携带 session 和 capture ID。成功获取返回 MCP `image/png` image content；PNG 最多 4 MiB、800 万像素，不受普通查询页 512 KiB 限制。服务端验证连接玩家、会话、请求、分片序列和图片；结果 60 秒内可重复取回。截图为客户端自报的当前渲染视角，不保证恶意客户端数据真实，不能用于反作弊；不提供远程相机控制。
 
 ```json
-{"name":"request_screenshot","arguments":{"world_session_id":"s-example","player_uuid":"22222222-2222-4222-8222-222222222222","request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
+{"name":"request_screenshot","arguments":{"world_session_id":"s-example","request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
 ```
 
 ### `undo_operation` 条件状态恢复

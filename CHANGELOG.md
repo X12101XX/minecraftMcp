@@ -13,6 +13,7 @@
 
 ### Changed
 
+- 截图默认使用 `camera_player` 配置的专用相机账号，不再默认截取真实玩家；仍可显式传入 `player_uuid`。截图前会关闭自动弹出的暂停菜单。
 - 写速率改为可配置 `write_candidates_per_tick`，默认 256（1–1024），恢复约 5,000 方块/秒的批量吞吐；每 Tick 仍受约 2 ms 共享预算约束。
 - `SERVER_TICK_TIMEOUT` 现在明确报告请求已入队、Tick 停顿年龄与恢复提示；停顿超过 1 秒时最多等待约 2 秒。
 

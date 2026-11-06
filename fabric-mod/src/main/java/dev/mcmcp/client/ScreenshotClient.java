@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
+import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 
@@ -49,6 +50,8 @@ public final class ScreenshotClient {
 		if (client.level == null || client.player == null || client.getConnection() == null || pending != null) {
 			reply(request.session(), request.id(), ScreenshotPayload.Response.ERROR); return;
 		}
+		// A lost window focus opens the pause menu; it is not part of the requested view.
+		if (client.gui.screen() instanceof PauseScreen) client.setScreenAndShow(null);
 		pending = new Pending(request, client);
 	}
 	private void tick(Minecraft client) {

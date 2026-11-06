@@ -57,6 +57,24 @@ public final class ScreenshotCoordinator {
 		if (INSTANCES.putIfAbsent(server, this) != null) throw new IllegalStateException("capture coordinator already attached");
 	}
 	private void checkSession(String requested) { if (!session.equals(requested)) throw new IllegalArgumentException("WORLD_SESSION_MISMATCH"); }
+	/** Must run on the server thread. Resolves a camera account by UUID or exact account name. */
+	public String startBySelector(String requested, String selector, String requestId) {
+		checkSession(requested);
+		if (selector == null || selector.isBlank()) throw new IllegalArgumentException("CAMERA_PLAYER_REQUIRED");
+		ServerPlayer player = null;
+		try {
+			player = server.getPlayerList().getPlayer(UUID.fromString(selector));
+		} catch (IllegalArgumentException ignored) {
+			for (ServerPlayer candidate : server.getPlayerList().getPlayers()) {
+				if (candidate.getGameProfile().name().equalsIgnoreCase(selector)) {
+					if (player != null) throw new IllegalArgumentException("PLAYER_REQUIRED");
+					player = candidate;
+				}
+			}
+		}
+		if (player == null) throw new IllegalArgumentException("PLAYER_NOT_FOUND");
+		return start(requested, player.getUUID(), requestId);
+	}
 	/** Must run on the server thread. A canonical UUID request ID makes retries idempotent. */
 	public String start(String requested, UUID playerId, String requestId) {
 		checkSession(requested); tick();

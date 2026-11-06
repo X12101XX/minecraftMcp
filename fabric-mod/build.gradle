@@ -14,9 +14,9 @@ loom {
 	}
 	runs {
 		client {
-			runDir "../integration/client"
+			runDir (project.findProperty("mc_rundir") ?: "../integration/client")
 			programArg "--username"
-			programArg "DevBuilder"
+			programArg (project.findProperty("mc_username") ?: "DevBuilder")
 		}
 	}
 }

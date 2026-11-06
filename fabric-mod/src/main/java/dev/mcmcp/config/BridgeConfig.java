@@ -27,13 +27,16 @@ public final class BridgeConfig {
 	public final int port;
 	public final boolean allowWrites;
 	public final int writeCandidatesPerTick;
+	public final String cameraPlayer;
 	public final String token;
 	public final Path credentialsPath;
 
-	private BridgeConfig(int port, boolean allowWrites, int writeCandidatesPerTick, String token, Path credentialsPath) {
+	private BridgeConfig(int port, boolean allowWrites, int writeCandidatesPerTick, String cameraPlayer,
+			String token, Path credentialsPath) {
 		this.port = port;
 		this.allowWrites = allowWrites;
 		this.writeCandidatesPerTick = writeCandidatesPerTick;
+		this.cameraPlayer = cameraPlayer;
 		this.token = token;
 		this.credentialsPath = credentialsPath;
 	}
@@ -49,6 +52,7 @@ public final class BridgeConfig {
 		int port = DEFAULT_PORT;
 		boolean allowWrites = true;
 		int writeCandidatesPerTick = DEFAULT_WRITE_CANDIDATES_PER_TICK;
+		String cameraPlayer = "";
 		if (Files.isRegularFile(settingsPath)) {
 			try {
 				JsonObject settings = JsonParser.parseString(Files.readString(settingsPath, StandardCharsets.UTF_8))
@@ -73,6 +77,9 @@ public final class BridgeConfig {
 								DEFAULT_WRITE_CANDIDATES_PER_TICK);
 					}
 				}
+				if (settings.has("camera_player") && settings.get("camera_player").isJsonPrimitive()) {
+					cameraPlayer = settings.get("camera_player").getAsString().trim();
+				}
 			} catch (RuntimeException e) {
 				MinecraftMcpMod.LOGGER.warn("Could not parse {}; using defaults", settingsPath, e);
 			}
@@ -81,6 +88,7 @@ public final class BridgeConfig {
 			settings.addProperty("port", DEFAULT_PORT);
 			settings.addProperty("allow_writes", true);
 			settings.addProperty("write_candidates_per_tick", DEFAULT_WRITE_CANDIDATES_PER_TICK);
+			settings.addProperty("camera_player", "");
 			Files.writeString(settingsPath, dev.mcmcp.bridge.Json.GSON.toJson(settings) + System.lineSeparator(),
 					StandardCharsets.UTF_8);
 		}
@@ -118,6 +126,6 @@ public final class BridgeConfig {
 		} catch (UnsupportedOperationException ignored) {
 			// Windows: the per-user profile directory is the practical boundary. README documents it.
 		}
-		return new BridgeConfig(port, allowWrites, writeCandidatesPerTick, token, credentialsPath);
+		return new BridgeConfig(port, allowWrites, writeCandidatesPerTick, cameraPlayer, token, credentialsPath);
 	}
 }

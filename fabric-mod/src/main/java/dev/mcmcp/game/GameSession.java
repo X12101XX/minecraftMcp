@@ -42,7 +42,7 @@ public final class GameSession {
 		}
 		GameSession session = new GameSession(server, config);
 		try {
-			session.bridge = new BridgeServer(config, session.operations, session.screenshots);
+			session.bridge = new BridgeServer(config, session.operations, session.screenshots, config.cameraPlayer);
 			session.bridge.start();
 			MinecraftMcpMod.LOGGER.info("Minecraft MCP bridge listening on {} (session {})",
 					config.url(), session.sessionId);

@@ -90,7 +90,7 @@ cd fabric-mod
 
 首次进入世界后，Mod 会在配置目录创建：
 
-- `config/minecraft-mcp.json`：`port`（默认 `8765`）和 `allow_writes`。
+- `config/minecraft-mcp.json`：`port`（默认 `8765`）、`allow_writes`、`write_candidates_per_tick` 和可选的 `camera_player`（专用截图账号名称或 UUID）。
 - `config/minecraft-mcp.credentials.json`：内部 bridge URL 和高熵 Token，仅当前用户可读（支持的平台）。
 
 日志会打印监听地址和凭据路径，但**不会打印 Token**。不要提交、粘贴或通过命令行传递凭据文件。示例路径：
@@ -155,7 +155,7 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 
 `undo_operation` 可按记录的写后 BlockState 条件恢复直接写入；它不能检测状态变更后又变回原样（ABA），也不能恢复方块实体、NBT 和间接世界副作用，不是事务回滚。
 
-截图指定在线且安装同版本 Mod 的玩家，**不会弹出授权提示**；持有 MCP 凭据的进程可以读取其当前游戏画面，包括聊天和 HUD。仅在已授权的环境中使用。截图为当前视角，非任意位置相机；限制 800 万像素及 4 MiB PNG，结果保留 60 秒。
+截图默认使用 `config/minecraft-mcp.json` 中 `camera_player` 配置的专用相机账号，而不是真实玩家；在该账号的客户端安装同版本 Mod 并进入世界即可。未配置时才要求显式 `player_uuid`。画面可能包含聊天和 HUD；截图为该账号的当前视角，非任意位置相机。限制 800 万像素及 4 MiB PNG，结果保留 60 秒。
 
 无人值守测试 dedicated 服时，需把 `server.properties` 的 `pause-when-empty-seconds` 设为 `0`；否则无玩家时服务端可能暂停 Tick，异步任务会等待而不是完成。单人游戏可用 F3+P 关闭失焦暂停；主动打开暂停菜单仍会停止集成服务端 Tick。超时后应查询原任务，而非新建重复任务。
 
@@ -183,7 +183,7 @@ MCP Client 通过 stdio 启动 `mcp-server/dist/index.js`，并设置：
 | `batch_set_blocks_sharded_by_request_id` | `world_session_id`, `request_id` | 查询当前 MCP 进程内的分片写父任务 |
 | `undo_operation` | `world_session_id`, `dimension`, 源 `operation_id`, `request_id`, `on_error?` | 异步条件恢复 |
 | `preload_chunks` | `world_session_id`, `dimension`, `min`, `max`, `request_id` | 显式加载最多 1,024 个区块，加载票据约 5 分钟 |
-| `request_screenshot` | `world_session_id`, `player_uuid`, `request_id` | 直接请求指定玩家当前画面 |
+| `request_screenshot` | `world_session_id`, `request_id`, 可选 `player_uuid` | 截取配置的相机账号；省略时用 `camera_player` |
 | `get_screenshot_status` / `get_screenshot` / `cancel_screenshot` | `world_session_id`, `capture_id` | 查询、取得 PNG 或取消截图 |
 | `get_operation` | `world_session_id`, `operation_id` | 同步查询任务 |
 | `get_operation_by_request_id` | `world_session_id`, `request_id` | 按请求 ID 查询已接受任务 |

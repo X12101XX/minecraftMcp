@@ -73,10 +73,10 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "request_screenshot",
-    title: "Request a player screenshot",
-    description: "Captures the selected online modded player's current game view without a consent prompt. The image may include private chat and HUD. Anyone holding the bridge credentials can request it. Use the same request_id to recover a lost response.",
-    inputSchema: { type: "object", properties: { world_session_id: session, player_uuid: { type: "string", pattern: requestId.pattern, description: "UUID of the online player whose game view will be captured." }, request_id: requestId }, required: ["world_session_id", "player_uuid", "request_id"], additionalProperties: false },
-    annotations: { ...writeAnnotations, destructiveHint: false, title: "Request a player screenshot" },
+    title: "Capture a camera view",
+    description: "Captures the configured camera account's current view, or an explicitly named online player when player_uuid is supplied. Configure camera_player in minecraft-mcp.json to use a dedicated fake/camera client instead of a real player. The image may include chat and HUD. Use the same request_id to recover a lost response.",
+    inputSchema: { type: "object", properties: { world_session_id: session, player_uuid: { type: "string", pattern: requestId.pattern, description: "Optional online player UUID. Omit to use the configured camera account." }, request_id: requestId }, required: ["world_session_id", "request_id"], additionalProperties: false },
+    annotations: { ...writeAnnotations, destructiveHint: false, title: "Capture a camera view" },
   },
   {
     name: "get_screenshot_status",
