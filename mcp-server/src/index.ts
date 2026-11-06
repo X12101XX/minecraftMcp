@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const settings = loadSettings();
   const client = new BridgeClient(settings);
   const server = new Server(
-    { name: "minecraft-mcp", version: "1.0.0" },
+    { name: "minecraft-mcp", version: "1.1.0" },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
 

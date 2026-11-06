@@ -205,3 +205,14 @@ node test/negative.mjs
 - 当前模式是为了逐块过程可见，不能沿用历史 96,000 方块 / 18.98 秒的批量吞吐结论。未对当前模式重新执行 96,000/262,144 个候选的长时完整写入。
 - 没有测量客户端帧率分位数、8192 项全部可见模型的极限负载、第三方 shader/资源包/模组渲染兼容、无 Mod 原版客户端的自定义包协商、长时断线/暂停竞态。普通客户端只会看到真实世界更新，不宣称有自定义预览。
 - 集成世界本次完成了启动、真实画面、读写、错误提示和夹具恢复；没有另外进行集成存档保存后再启动的持久化验收，dedicated 持久化已单独验证。
+
+## 9. 1.1.0 发布包安装验收 — 2026-11-06
+
+- Mod `gradle.properties`、npm package/lockfile、MCP 握手版本与安装脚本同步为 **1.1.0**；工具参数、协议和游戏依赖版本未改变。
+- 版本更新后再次执行 `cd fabric-mod && ./gradlew test build`、`cd mcp-server && npm test`，均通过（14 个 Java / 5 个 MCP 测试）；`bash -n packaging/install.sh` 通过。
+- 从独立暂存目录 `npm pack`，MCP tarball 包含构建输出、README、package.json 和原仓库 LICENSE，不含凭据、存档、node_modules 或开发运行实例。独立 Skill ZIP 保留完整建造 Skill 与 references。
+- 在隔离的 npm prefix、SKILLS_DIR、MODS_DIR 中实际运行完整包的 `./install.sh`：依赖安装成功，生成可执行 MCP 命令，Skill 和 `minecraft-mcp-1.1.0.jar` 安装成功；未修改用户真实全局安装、Skill 或游戏实例。
+- 从安装脚本复制出的 **1.1.0 JAR** 启动真实 dedicated 世界；Fabric 日志显示 `minecraft-mcp 1.1.0`。JAR 元数据包含正确版本及服务端/客户端两个入口。
+- 使用安装后的 `minecraft-mcp-server` 可执行文件，经官方 SDK stdio Client 握手取得 `{name:\"minecraft-mcp\",version:\"1.1.0\"}`，发现 14 个工具；真实世界返回每 Tick 一个写入候选。
+- 在已加载的专用测试区域 `(24..29,210,8)` 提交 6 个石头/玻璃/完整楼梯状态目标：25 Tick 终态成功、changed=6、逐坐标完整状态 **0 差异**。随后以 expected_state 条件恢复这 6 个测试方块，终态成功，逐点回读全部空气。
+- 本次版本化重新验收聚焦实际安装产物和协议/世界闭环；图形效果与 dedicated/integrated 的完整功能证据沿用第 8 节的同一实现，不把版本号更新称作新一轮图形负载或持久化测试。

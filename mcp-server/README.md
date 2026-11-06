@@ -7,14 +7,14 @@ MCP stdio server for the Minecraft MCP Fabric bridge. It exposes 14 standard MCP
 From a GitHub release tarball:
 
 ```bash
-npm install -g ./minecraft-mcp-server-1.0.0.tgz
+npm install -g ./minecraft-mcp-server-1.1.0.tgz
 ```
 
 Or run directly with `npx`:
 
 ```bash
 MINECRAFT_MCP_CONFIG=/path/to/minecraft-mcp.credentials.json \
-  npx -y ./minecraft-mcp-server-1.0.0.tgz
+  npx -y ./minecraft-mcp-server-1.1.0.tgz
 ```
 
 `MINECRAFT_MCP_CONFIG` must point at the credentials file written by the Fabric mod. Start Minecraft and enter a world before calling world tools.

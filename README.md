@@ -37,7 +37,7 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 | `docs/tool-contracts.md` | 每个 MCP Tool 的完整参数、结果、错误、分页和内部协议 |
 | `docs/architecture.md` | 线程、调度、区块、压缩、安全与生命周期设计 |
 | `docs/verification-report.md` | 实际构建、测试、性能和未验证项 |
-| `docs/release-1.0.0.md` | GitHub Release 资产、安装脚本与安装步骤 |
+| `docs/release-1.1.0.md` | 最新 GitHub Release 资产、升级和安装步骤 |
 | `integration/client/` | 本地集成测试客户端（运行时目录，不纳入版本） |
 | `skills/` | 开发 Skill 与运行时建造 Skill |
 
@@ -54,10 +54,10 @@ Mod 只提供内部桥，**不是** MCP 端点；面向 Agent 的标准 MCP 服�
 ```bash
 cd fabric-mod
 ./gradlew build
-# 产物：build/libs/minecraft-mcp-1.0.0.jar
+# 产物：build/libs/minecraft-mcp-1.1.0.jar
 ```
 
-把 `minecraft-mcp-1.0.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。
+把 `minecraft-mcp-1.1.0.jar` 和 Fabric API JAR 放入游戏实例或 dedicated 服务端的 `mods/`。升级前移除旧版 Minecraft MCP JAR，避免重复 Mod ID。
 
 需要看到 Agent 的选区与待放方块时，**服务端和观看者客户端都安装同一构建的本 Mod + Fabric API**；无需其他前置 Mod。只装服务端仍可正常读取/逐块写入，但原版客户端没有自定义预览。单人世界安装一次即可。
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="1.0.0"
+VERSION="1.1.0"
 MCP_TGZ="${MCP_TGZ:-$HERE/minecraft-mcp-server-$VERSION.tgz}"
 MOD_JAR="${MOD_JAR:-$HERE/minecraft-mcp-$VERSION.jar}"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/.agents/skills}"
@@ -37,7 +37,9 @@ cat <<'MESSAGE'
 
 MCP server installed. Next:
 
-1. Install the mod JAR and Fabric API 0.165.2+26.3 into your Minecraft mods/ directory.
+1. Remove the previous Minecraft MCP JAR before installing version 1.1.0.
+   Install this mod JAR and Fabric API 0.165.2+26.3 on BOTH the server and
+   viewing clients to see selection highlights and translucent build previews.
 2. Start Minecraft and enter a world. The mod writes:
      <game-dir>/config/minecraft-mcp.credentials.json
 3. Add this to ~/.omp/agent/mcp.json (merge with existing mcpServers):
