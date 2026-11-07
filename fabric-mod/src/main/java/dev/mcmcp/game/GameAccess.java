@@ -378,9 +378,11 @@ public final class GameAccess {
 		if (!chunk.isLightCorrect() || !engine.lightOnInColumn(SectionPos.asLong(pos.getX() >> 4, 0, pos.getZ() >> 4))) {
 			throw BridgeException.of("LIGHT_NOT_READY", "light data is not initialized for the target chunk", null);
 		}
+		var blockLayer = engine.getLayerListener(LightLayer.BLOCK);
+		var skyLayer = engine.getLayerListener(LightLayer.SKY);
 		JsonObject facts = new JsonObject();
-		facts.addProperty("block_light", engine.getLayerListener(LightLayer.BLOCK).getLightValue(pos));
-		facts.addProperty("sky_light", engine.getLayerListener(LightLayer.SKY).getLightValue(pos));
+		facts.addProperty("block_light", blockLayer != null ? blockLayer.getLightValue(pos) : 0);
+		facts.addProperty("sky_light", skyLayer != null ? skyLayer.getLightValue(pos) : 0);
 		facts.addProperty("raw_brightness", engine.getRawBrightness(pos, level.getSkyDarken()));
 		return facts;
 	}
@@ -401,7 +403,8 @@ public final class GameAccess {
 		} else {
 			JsonObject value = new JsonObject();
 			value.addProperty("is_empty", false);
-			value.addProperty("id", BuiltInRegistries.FLUID.getKey(fluid.getType()).toString());
+			var fluidKey = BuiltInRegistries.FLUID.getKey(fluid.getType());
+			value.addProperty("id", fluidKey != null ? fluidKey.toString() : "minecraft:empty");
 			value.addProperty("is_source", fluid.isSource());
 			facts.add("fluid", value);
 		}
@@ -415,8 +418,9 @@ public final class GameAccess {
 		VoxelShape collision = state.getCollisionShape(new LoadedOnlyView(level), pos, CollisionContext.empty());
 		TerrainFact.FluidSample fluidSample = null;
 		if (!fluid.isEmpty()) {
+			var fluidKey = BuiltInRegistries.FLUID.getKey(fluid.getType());
 			fluidSample = new TerrainFact.FluidSample(
-					BuiltInRegistries.FLUID.getKey(fluid.getType()).toString(),
+					fluidKey != null ? fluidKey.toString() : "minecraft:empty",
 					fluid.isSource(), stateKey(state));
 		}
 		return new TerrainFact(pos.getY(), stateKey(state), state.isAir(), fluidSample,

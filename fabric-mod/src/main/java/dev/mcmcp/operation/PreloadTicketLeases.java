@@ -51,7 +51,7 @@ public final class PreloadTicketLeases {
 			entry = new Entry();
 			entries.put(chunk, entry);
 		}
-		if (entry.retained && tick - entry.lastAcquiredTick > retentionTicks) {
+		if (entry.retained && (tick - entry.lastAcquiredTick > retentionTicks || tick < entry.lastAcquiredTick)) {
 			entry.retained = false;
 		}
 		entry.live++;
@@ -86,7 +86,7 @@ public final class PreloadTicketLeases {
 	 * positions so the caller can remove any engine ticket still present.
 	 */
 	public List<Long> prune(int tick) {
-		if (tick - lastPruneTick < PRUNE_INTERVAL_TICKS) {
+		if (tick - lastPruneTick < PRUNE_INTERVAL_TICKS && tick >= lastPruneTick) {
 			return List.of();
 		}
 		lastPruneTick = tick;
@@ -95,7 +95,7 @@ public final class PreloadTicketLeases {
 		while (iterator.hasNext()) {
 			Map.Entry<Long, Entry> candidate = iterator.next();
 			Entry entry = candidate.getValue();
-			if (entry.live == 0 && entry.retained && tick - entry.lastAcquiredTick > retentionTicks) {
+			if (entry.live == 0 && entry.retained && (tick - entry.lastAcquiredTick > retentionTicks || tick < entry.lastAcquiredTick)) {
 				removed.add(candidate.getKey());
 				iterator.remove();
 				if (removed.size() >= MAX_PRUNE_PER_CALL) {

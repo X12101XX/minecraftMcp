@@ -61,21 +61,37 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 			tools.values().removeIf(expiry -> now >= expiry);
 			if (ghosts.length > 0) { dirty = true; if (now >= previewExpires) clearGhosts(); }
 		});
-		LevelExtractionEvents.END_EXTRACTION.register(context -> extract(context.level()));
-		LevelRenderEvents.COLLECT_SUBMITS.register(this::render);
+		LevelExtractionEvents.END_EXTRACTION.register(context -> {
+			try {
+				extract(context.level());
+			} catch (Throwable ignored) {}
+		});
+		LevelRenderEvents.COLLECT_SUBMITS.register(context -> {
+			try {
+				render(context);
+			} catch (Throwable ignored) {}
+		});
 		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("minecraft-mcp", "activity"), (gui, delta) -> {
-			Minecraft client = Minecraft.getInstance();
-			if (client.level == null || client.gui.hud.isHidden() || (tools.isEmpty() && System.nanoTime() >= statusExpires)) return;
-			int x = 10, y = 10, width = Math.min(340, gui.guiWidth() - 20);
-			gui.fill(x, y, x + width, y + 41, 0xB0121823);
-			gui.fill(x, y, x + 2, y + 41, 0xFF63E5F5);
-			gui.text(client.font, "MCP  /  AGENT ACTIVITY", x + 8, y + 6, 0xFF9CF3FF);
-			String recent = String.join(" / ", tools.keySet());
-			gui.text(client.font, client.font.plainSubstrByWidth(recent, width - 16), x + 8, y + 18, 0xFFD7E5ED);
-			if (System.nanoTime() < statusExpires) {
-				gui.text(client.font, status, x + 8, y + 29, status.contains("failed") ? 0xFFFF7777 : 0xFF9EE8B3);
-				if (total > 0) gui.fill(x + 2, y + 39, x + 2 + (int) ((width - 2L) * processed / total), y + 41, 0xFF63E5F5);
-			}
+			try {
+				Minecraft client = Minecraft.getInstance();
+				if (client.level == null || client.gui == null || client.gui.hud == null || client.gui.hud.isHidden() || client.font == null || (tools.isEmpty() && System.nanoTime() >= statusExpires)) return;
+				int x = 10, y = 10, width = Math.min(340, Math.max(40, gui.guiWidth() - 20));
+				gui.fill(x, y, x + width, y + 41, 0xB0121823);
+				gui.fill(x, y, x + 2, y + 41, 0xFF63E5F5);
+				gui.text(client.font, "MCP  /  AGENT ACTIVITY", x + 8, y + 6, 0xFF9CF3FF);
+				String recent = String.join(" / ", tools.keySet());
+				if (width > 16) {
+					gui.text(client.font, client.font.plainSubstrByWidth(recent, width - 16), x + 8, y + 18, 0xFFD7E5ED);
+				}
+				if (System.nanoTime() < statusExpires) {
+					gui.text(client.font, status, x + 8, y + 29, status.contains("failed") ? 0xFFFF7777 : 0xFF9EE8B3);
+					if (total > 0 && width > 2) {
+						long progressClamped = Math.max(0, Math.min(processed, total));
+						int barWidth = (int) ((width - 2L) * progressClamped / total);
+						gui.fill(x + 2, y + 39, x + 2 + barWidth, y + 41, 0xFF63E5F5);
+					}
+				}
+			} catch (Throwable ignored) {}
 		});
 	}
 
@@ -96,16 +112,28 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 				if (p.style().startsWith("failed ")) { status = p.style(); statusExpires = expires; processed = 0; total = 0; }
 			}
 			case RANGE -> {
+				if (p.min() == null || p.max() == null) return;
 				dirty = true;
 				selections.remove(p.id());
-				selections.put(p.id(), new Selection(p.min(), Shapes.box(-0.003, -0.003, -0.003, p.max().getX() - (double) p.min().getX() + 1.003, p.max().getY() - (double) p.min().getY() + 1.003, p.max().getZ() - (double) p.min().getZ() + 1.003), p.style(), System.nanoTime(), expires));
+				int minX = Math.min(p.min().getX(), p.max().getX());
+				int minY = Math.min(p.min().getY(), p.max().getY());
+				int minZ = Math.min(p.min().getZ(), p.max().getZ());
+				int maxX = Math.max(p.min().getX(), p.max().getX());
+				int maxY = Math.max(p.min().getY(), p.max().getY());
+				int maxZ = Math.max(p.min().getZ(), p.max().getZ());
+				BlockPos origin = new BlockPos(minX, minY, minZ);
+				VoxelShape shape = Shapes.box(-0.003, -0.003, -0.003, (maxX - minX) + 1.003, (maxY - minY) + 1.003, (maxZ - minZ) + 1.003);
+				selections.put(p.id(), new Selection(origin, shape, p.style() == null ? "" : p.style(), System.nanoTime(), expires));
 				while (selections.size() > 64) selections.remove(selections.keySet().iterator().next());
 			}
 			case PREVIEW -> {
 				dirty = true;
+				if (p.total() < 0 || p.total() > VisualPayload.MAX_BLOCKS) return;
 				if (p.offset() == 0) { clearGhosts(); previewId = p.id(); ghosts = new VisualPayload.Entry[p.total()]; }
-				if (!previewId.equals(p.id()) || ghosts.length != p.total()) return;
-				for (int i = 0; i < p.entries().size(); i++) ghosts[p.offset() + i] = p.entries().get(i);
+				if (!previewId.equals(p.id()) || ghosts.length != p.total() || p.offset() < 0) return;
+				int count = p.entries() == null ? 0 : p.entries().size();
+				if (p.offset() + count > ghosts.length) return;
+				for (int i = 0; i < count; i++) ghosts[p.offset() + i] = p.entries().get(i);
 				previewExpires = expires;
 			}
 			case PROGRESS -> {
@@ -133,25 +161,41 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 	/** Extraction owns all ClientLevel/model access; render callbacks consume frozen value data only. */
 	private void extract(ClientLevel world) {
 		Minecraft client = Minecraft.getInstance();
+		if (client == null || client.getModelManager() == null) return;
 		Object currentModels = client.getModelManager().getBlockStateModelSet();
 		if (currentModels != modelSet) { models.clear(); modelSet = currentModels; dirty = true; }
 		if (!dirty) return;
 		dirty = false;
 		List<GhostModel> visible = new ArrayList<>();
 		for (VisualPayload.Entry ghost : ghosts) {
-			if (ghost == null || !world.hasChunkAt(ghost.pos())) continue;
+			if (ghost == null || ghost.pos() == null || ghost.state() == null || !world.hasChunkAt(ghost.pos())) continue;
 			GhostModel model = models.get(ghost.pos());
 			if (model == null) {
-				List<BlockStateModelPart> parts = new ArrayList<>();
-				client.getModelManager().getBlockStateModelSet().get(ghost.state()).collectParts(RandomSource.create(ghost.pos().asLong()), parts);
-				List<ColoredQuad> quads = new ArrayList<>();
-				for (BlockStateModelPart part : parts) {
-					collectQuads(client, world, ghost, part.getQuads(null), quads);
-					for (Direction face : FACES) collectQuads(client, world, ghost, part.getQuads(face), quads);
+				try {
+					var modelSet = client.getModelManager() != null ? client.getModelManager().getBlockStateModelSet() : null;
+					var stateModel = modelSet != null ? modelSet.get(ghost.state()) : null;
+					List<ColoredQuad> quads = new ArrayList<>();
+					if (stateModel != null) {
+						List<BlockStateModelPart> parts = new ArrayList<>();
+						stateModel.collectParts(RandomSource.create(ghost.pos().asLong()), parts);
+						for (BlockStateModelPart part : parts) {
+							if (part == null) continue;
+							collectQuads(client, world, ghost, part.getQuads(null), quads);
+							for (Direction face : FACES) collectQuads(client, world, ghost, part.getQuads(face), quads);
+						}
+					}
+					VoxelShape shape = null;
+					try {
+						shape = ghost.state().isAir() ? Shapes.block() : ghost.state().getShape(world, ghost.pos());
+						if ((shape == null || shape.isEmpty()) && !ghost.state().getFluidState().isEmpty()) shape = ghost.state().getFluidState().getShape(world, ghost.pos());
+					} catch (Throwable ignored) {}
+					if (shape == null || (shape.isEmpty() && ghost.state().isAir())) shape = Shapes.block();
+					List<AABB> boxes = (quads.isEmpty() && !ghost.state().isAir()) ? List.copyOf(shape.toAabbs()) : List.of();
+					model = new GhostModel(ghost.pos(), List.copyOf(quads), shape, ghost.state().isAir(), boxes);
+				} catch (Throwable t) {
+					model = new GhostModel(ghost.pos(), List.of(), Shapes.block(), ghost.state().isAir(), List.of());
 				}
-				VoxelShape shape = ghost.state().isAir() ? Shapes.block() : ghost.state().getShape(world, ghost.pos());
-				if (shape.isEmpty() && !ghost.state().getFluidState().isEmpty()) shape = ghost.state().getFluidState().getShape(world, ghost.pos());
-				model = new GhostModel(ghost.pos(), List.copyOf(quads), shape, ghost.state().isAir(), quads.isEmpty() && !ghost.state().isAir() ? List.copyOf(shape.toAabbs()) : List.of()); models.put(ghost.pos(), model);
+				models.put(ghost.pos(), model);
 			}
 			visible.add(model);
 		}
@@ -159,11 +203,17 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 	}
 
 	private static void collectQuads(Minecraft client, ClientLevel level, VisualPayload.Entry ghost, List<BakedQuad> quads, List<ColoredQuad> result) {
+		if (quads == null) return;
 		for (BakedQuad quad : quads) {
+			if (quad == null) continue;
 			int tint = 0xFFFFFF;
-			if (quad.materialInfo().isTinted()) {
-				var source = client.getBlockColors().getTintSource(ghost.state(), quad.materialInfo().tintIndex());
-				if (source != null) tint = source.colorInWorld(ghost.state(), level, ghost.pos());
+			if (quad.materialInfo() != null && quad.materialInfo().isTinted() && client.getBlockColors() != null) {
+				try {
+					var source = client.getBlockColors().getTintSource(ghost.state(), quad.materialInfo().tintIndex());
+					if (source != null) tint = source.colorInWorld(ghost.state(), level, ghost.pos());
+				} catch (Throwable ignored) {
+					tint = 0xFFFFFF;
+				}
 			}
 			QuadInstance instance = new QuadInstance(); instance.setColor(0x66000000 | (tint & 0xFFFFFF)); instance.setLightCoords(0xF000F0); instance.setOverlayCoords(OverlayTexture.NO_OVERLAY);
 			result.add(new ColoredQuad(quad, instance));
@@ -172,13 +222,17 @@ public final class MinecraftMcpClient implements ClientModInitializer {
 
 	private void render(LevelRenderContext context) {
 		Frame current = frame;
+		if (context == null || context.levelState() == null || context.levelState().cameraRenderState == null || context.poseStack() == null || context.submitNodeCollector() == null) return;
 		Vec3 camera = context.levelState().cameraRenderState.pos;
+		if (camera == null) return;
 		PoseStack pose = context.poseStack();
 		long now = System.nanoTime();
 		for (Selection selection : current.selections) {
 			if (now >= selection.expires) continue;
-			float remaining = (float) (selection.expires - now) / (selection.expires - selection.created);
-			int alpha = (int) (255 * Math.min(1, remaining * 3));
+			long totalTime = selection.expires - selection.created;
+			float remaining = totalTime <= 0 ? 0.0f : (float) (selection.expires - now) / totalTime;
+			if (Float.isNaN(remaining) || remaining < 0.0f) remaining = 0.0f;
+			int alpha = (int) (255 * Math.min(1.0f, remaining * 3.0f));
 			int rgb = switch (selection.style) { case "error", "remove" -> 0xFF6B75; case "place" -> 0x78FFAD; case "unchanged" -> 0xE9C86D; default -> 0x75E9FF; };
 			pose.pushPose(); pose.translate(selection.pos.getX() - camera.x, selection.pos.getY() - camera.y, selection.pos.getZ() - camera.z);
 			context.submitNodeCollector().submitShapeOutline(pose, selection.shape, RenderTypes.linesTranslucentNoDepthWrite(), (alpha << 24) | rgb, 3.0F, false);

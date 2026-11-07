@@ -255,7 +255,7 @@ public final class BridgeServer {
 						captureId = screenshots.startBySelector(session, cameraPlayer, request, cameraPose);
 					} else {
 						UUID uuid = UUID.fromString(player);
-						if (!uuid.toString().equals(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
+						if (!uuid.toString().equalsIgnoreCase(player)) throw new IllegalArgumentException("INVALID_ARGUMENT");
 						captureId = screenshots.start(session, uuid, request);
 					}
 					response.addProperty("capture_id", captureId);

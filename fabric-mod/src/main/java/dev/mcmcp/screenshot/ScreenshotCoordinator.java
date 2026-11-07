@@ -59,7 +59,8 @@ public final class ScreenshotCoordinator {
 	public ScreenshotCoordinator(MinecraftServer server, String session) {
 		if (session == null || session.isEmpty() || session.length() > 128) throw new IllegalArgumentException("invalid world session");
 		this.server = server; this.session = session;
-		if (INSTANCES.putIfAbsent(server, this) != null) throw new IllegalStateException("capture coordinator already attached");
+		ScreenshotCoordinator old = INSTANCES.put(server, this);
+		if (old != null && old != this) old.shutdown();
 	}
 	private void checkSession(String requested) { if (!session.equals(requested)) throw new IllegalArgumentException("WORLD_SESSION_MISMATCH"); }
 	/** Must run on the server thread. Resolves a camera account by UUID or exact account name. */

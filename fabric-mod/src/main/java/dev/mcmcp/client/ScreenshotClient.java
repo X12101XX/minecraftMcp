@@ -51,7 +51,7 @@ public final class ScreenshotClient {
 			reply(request.session(), request.id(), ScreenshotPayload.Response.ERROR); return;
 		}
 		// A lost window focus opens the pause menu; it is not part of the requested view.
-		if (client.gui.screen() instanceof PauseScreen) client.setScreenAndShow(null);
+		if (client.gui != null && client.gui.screen() instanceof PauseScreen) client.setScreenAndShow(null);
 		pending = new Pending(request, client);
 	}
 	private void tick(Minecraft client) {
@@ -69,8 +69,8 @@ public final class ScreenshotClient {
 		}
 		if (p.reading) return;
 		p.reading = true;
-		RenderTarget target = client.gameRenderer.mainRenderTarget();
-		if (target.width <= 0 || target.height <= 0 || (long) target.width * target.height > MAX_PIXELS) { reply(p.session, p.id, ScreenshotPayload.Response.ERROR); clear(client); return; }
+		RenderTarget target = client.gameRenderer != null ? client.gameRenderer.mainRenderTarget() : null;
+		if (target == null || target.width <= 0 || target.height <= 0 || (long) target.width * target.height > MAX_PIXELS) { reply(p.session, p.id, ScreenshotPayload.Response.ERROR); clear(client); return; }
 		try { Screenshot.takeScreenshot(target, image -> {
 			try { encoder.execute(() -> encode(client, p, image)); }
 			catch (RejectedExecutionException e) {
